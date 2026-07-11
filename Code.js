@@ -25,7 +25,20 @@ const TAB_INDICES  = 'Indices';
 const INDEX_LIST = [
   { key:'NIFTY50',   label:'NIFTY 50',   ticker:'INDEXNSE:NIFTY_50' },
   { key:'BANKNIFTY', label:'NIFTY BANK', ticker:'INDEXNSE:NIFTY_BANK' },
-  { key:'SENSEX',    label:'SENSEX',     ticker:'INDEXBOM:SENSEX' }
+  { key:'SENSEX',    label:'SENSEX',     ticker:'INDEXBOM:SENSEX' },
+  // Global indices — standard GOOGLEFINANCE index tickers, resolve like any other index.
+  { key:'DOWJONES',  label:'DOW JONES',  ticker:'INDEXDJX:.DJI' },
+  { key:'NASDAQ',    label:'NASDAQ',     ticker:'INDEXNASDAQ:.IXIC' },
+  { key:'SP500',     label:'S&P 500',    ticker:'INDEXSP:.INX' },
+  // Commodities — GOOGLEFINANCE has no native commodity/futures feed.
+  // GOLD uses the XAU "currency" trick: price of 1 troy oz of gold in USD (NOT ₹/10g MCX gold).
+  // BRENT has no ticker either, so this uses a Brent-oil ETF (BNO) as a live USD proxy —
+  // it tracks Brent crude closely but is not the exact spot/futures price.
+  { key:'GOLD',  label:'GOLD (USD/oz)',       ticker:'CURRENCY:XAUUSD' },
+  { key:'BRENT', label:'BRENT CRUDE (proxy)', ticker:'NYSEARCA:BNO' },
+  { key:'USDINR', label:'USD/INR', ticker:'CURRENCY:USDINR' }
+  // GIFT NIFTY intentionally NOT included: NSE IX isn't a supported GOOGLEFINANCE exchange
+  // prefix, so there's no free ticker for it — it would just show "—" forever if added here.
 ];
 
 /* All-time-high proxy: GOOGLEFINANCE has no native ATH field, so we scan WEEKLY historical

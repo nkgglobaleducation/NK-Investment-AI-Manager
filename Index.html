@@ -47,7 +47,7 @@
   .tab.active{color:var(--orange);border-bottom-color:var(--orange)}
 
   /* ---------- stat cards ---------- */
-  .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:14px 0}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:14px 0}
   .stat{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
     display:flex;flex-direction:column;justify-content:center}
   .stat .lbl{font-size:9.5px;color:#7183a1;letter-spacing:.7px;font-weight:600;margin-bottom:2px}
@@ -199,6 +199,19 @@
           <div class="mrow idx"><span>NIFTY 50</span><b id="stIdxNIFTY50Val">—</b><i id="stIdxNIFTY50Chg">—</i></div>
           <div class="mrow idx"><span>NIFTY BANK</span><b id="stIdxBANKNIFTYVal">—</b><i id="stIdxBANKNIFTYChg">—</i></div>
           <div class="mrow idx"><span>SENSEX</span><b id="stIdxSENSEXVal">—</b><i id="stIdxSENSEXChg">—</i></div>
+        </div>
+        <div class="stat">
+          <div class="lbl">GLOBAL INDICES</div>
+          <div class="mrow idx" title="No free GOOGLEFINANCE ticker exists for GIFT NIFTY (NSE IX) — always shows —"><span>GIFT NIFTY</span><b id="stIdxGIFTNIFTYVal">—</b><i id="stIdxGIFTNIFTYChg">—</i></div>
+          <div class="mrow idx"><span>DOW JONES</span><b id="stIdxDOWJONESVal">—</b><i id="stIdxDOWJONESChg">—</i></div>
+          <div class="mrow idx"><span>NASDAQ</span><b id="stIdxNASDAQVal">—</b><i id="stIdxNASDAQChg">—</i></div>
+          <div class="mrow idx"><span>S&amp;P 500</span><b id="stIdxSP500Val">—</b><i id="stIdxSP500Chg">—</i></div>
+        </div>
+        <div class="stat">
+          <div class="lbl">COMMODITIES</div>
+          <div class="mrow idx" title="No commodity feed for Brent — this is a Brent-oil ETF (BNO) proxy price, not exact spot"><span>BRENT CRUDE</span><b id="stIdxBRENTVal">—</b><i id="stIdxBRENTChg">—</i></div>
+          <div class="mrow idx" title="USD per troy oz, not ₹/10g MCX gold"><span>GOLD</span><b id="stIdxGOLDVal">—</b><i id="stIdxGOLDChg">—</i></div>
+          <div class="mrow idx"><span>USD/INR</span><b id="stIdxUSDINRVal">—</b><i id="stIdxUSDINRChg">—</i></div>
         </div>
         <div class="stat"><div class="lbl">AI SAYS EXIT NOW</div><div class="val red" id="stExit">—</div><div class="sub">All stocks analyzed</div></div>
       </div>
@@ -548,7 +561,7 @@ function setBox(prefix, inv, cur, pnl, pct){
 }
 function renderIndices(){
   const idx = DATA.indices || {};
-  ['NIFTY50','BANKNIFTY','SENSEX'].forEach(key=>{
+  ['NIFTY50','BANKNIFTY','SENSEX','DOWJONES','NASDAQ','SP500','BRENT','GOLD','USDINR'].forEach(key=>{
     const d = idx[key];
     const valEl = document.getElementById('stIdx'+key+'Val');
     const chgEl = document.getElementById('stIdx'+key+'Chg');
