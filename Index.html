@@ -209,11 +209,10 @@
         </div>
         <div class="stat">
           <div class="lbl">COMMODITIES</div>
-          <div class="mrow idx" title="No commodity feed for Brent — this is a Brent-oil ETF (BNO) proxy price, not exact spot"><span>BRENT CRUDE</span><b id="stIdxBRENTVal">—</b><i id="stIdxBRENTChg">—</i></div>
+          <div class="mrow idx" title="No free, accurate data source for Brent Crude yet — always shows —"><span>BRENT CRUDE</span><b id="stIdxBRENTVal">—</b><i id="stIdxBRENTChg">—</i></div>
           <div class="mrow idx" title="USD per troy oz, not ₹/10g MCX gold"><span>GOLD</span><b id="stIdxGOLDVal">—</b><i id="stIdxGOLDChg">—</i></div>
           <div class="mrow idx"><span>USD/INR</span><b id="stIdxUSDINRVal">—</b><i id="stIdxUSDINRChg">—</i></div>
         </div>
-        <div class="stat"><div class="lbl">AI SAYS EXIT NOW</div><div class="val red" id="stExit">—</div><div class="sub">All stocks analyzed</div></div>
       </div>
 
       <div class="chipbar" id="filterBar"></div>
@@ -545,7 +544,6 @@ function renderStats(){
   setBox('P1', inv1, cur1, pnl1, pct1);
   setBox('P2', inv2, cur2, pnl2, pct2);
   setBox('Tot', invT, curT, pnlT, pctT);
-  set('stExit', ROWS.filter(r=>r.sug==='EXIT NOW').length);
 
   const h=document.getElementById('hdrPnl');
   h.textContent = fmtMoney(pnlT)+' ('+fmtPct(pctT)+')';
@@ -561,7 +559,7 @@ function setBox(prefix, inv, cur, pnl, pct){
 }
 function renderIndices(){
   const idx = DATA.indices || {};
-  ['NIFTY50','BANKNIFTY','SENSEX','DOWJONES','NASDAQ','SP500','BRENT','GOLD','USDINR'].forEach(key=>{
+  ['NIFTY50','BANKNIFTY','SENSEX','DOWJONES','NASDAQ','SP500','GOLD','USDINR'].forEach(key=>{
     const d = idx[key];
     const valEl = document.getElementById('stIdx'+key+'Val');
     const chgEl = document.getElementById('stIdx'+key+'Chg');

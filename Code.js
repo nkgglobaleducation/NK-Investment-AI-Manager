@@ -32,14 +32,33 @@ const INDEX_LIST = [
   { key:'SP500',     label:'S&P 500',    ticker:'INDEXSP:.INX' },
   // Commodities — GOOGLEFINANCE has no native commodity/futures feed.
   // GOLD uses the XAU "currency" trick: price of 1 troy oz of gold in USD (NOT ₹/10g MCX gold).
-  // BRENT has no ticker either, so this uses a Brent-oil ETF (BNO) as a live USD proxy —
-  // it tracks Brent crude closely but is not the exact spot/futures price.
-  { key:'GOLD',  label:'GOLD (USD/oz)',       ticker:'CURRENCY:XAUUSD' },
-  { key:'BRENT', label:'BRENT CRUDE (proxy)', ticker:'NYSEARCA:BNO' },
-  { key:'USDINR', label:'USD/INR', ticker:'CURRENCY:USDINR' }
+  { key:'GOLD',  label:'GOLD (USD/oz)', ticker:'CURRENCY:XAUUSD' },
+  // USD/INR: GOOGLEFINANCE's CURRENCY: tickers don't reliably resolve when written via the
+  // Apps Script API (confirmed — always came back 0), so this one is fetched separately from
+  // a free public forex API instead of a GOOGLEFINANCE formula. See fetchUsdInrRate_() below.
+  { key:'USDINR', label:'USD/INR', ticker:null }
   // GIFT NIFTY intentionally NOT included: NSE IX isn't a supported GOOGLEFINANCE exchange
-  // prefix, so there's no free ticker for it — it would just show "—" forever if added here.
+  // prefix, and no free public API exists for it either — it would just show "—" forever if added.
+  // GOLD (CURRENCY:XAUUSD) has the same GOOGLEFINANCE-from-Apps-Script issue as USD/INR did and
+  // is left as-is (shows "—") until a metals-price API key is added — see CLAUDE.md if revisiting.
+  // BRENT CRUDE removed (was here as a BNO ETF proxy) — its price doesn't track real Brent crude
+  // closely enough to show (was ~$42 vs real ~$76). Needs a real commodities API (e.g. Alpha
+  // Vantage's free BRENT endpoint) to do properly — left as "—" in the UI until that's added.
 ];
+
+/* USD/INR via a free, no-key forex API (open.er-api.com) since GOOGLEFINANCE's CURRENCY: ticker
+ * doesn't resolve reliably from Apps Script. NOTE: this API only updates once every ~24h, so
+ * unlike every other live figure on this dashboard, USD/INR will NOT move intraday — it's a
+ * daily rate, not a live tick. Returns 0 on any failure (network, parse, missing field). */
+function fetchUsdInrRate_() {
+  try {
+    const res = UrlFetchApp.fetch('https://open.er-api.com/v6/latest/USD', { muteHttpExceptions: true });
+    const json = JSON.parse(res.getContentText());
+    return (json && json.rates && json.rates.INR) ? Number(json.rates.INR) : 0;
+  } catch (e) {
+    return 0;
+  }
+}
 
 /* All-time-high proxy: GOOGLEFINANCE has no native ATH field, so we scan WEEKLY historical
  * "high" prices from this date to today and take the MAX. Push it further back if you want —
@@ -50,7 +69,11 @@ const ATH_START_DATE = 'DATE(2000,1,1)';
 // that clearly should have a real value.
 const LIVE_PRICES_WAIT_MS = 15000;
 
-const AI_BATCH_SIZE = 10;
+// Smaller batches reduce the risk of the model cross-wiring content between stocks in the
+// same call (e.g. writing one stock's rationale under a different stock's symbol) — traded
+// off against total analysis time, since one batch = one 1-minute trigger fire. At 5, a
+// ~120-stock portfolio takes roughly twice as long to fully analyze as it did at 10.
+const AI_BATCH_SIZE = 5;
 const TRIGGER_HANDLER = 'processAIBatch';
 
 /* ---------- Provider/model slots (tried in order) ----------
@@ -267,12 +290,19 @@ function refreshLivePrices() {
   const idxSh = getSheet_(TAB_INDICES, ['Key', 'Label', 'Value', 'ChangePct', 'Change']);
   idxSh.clearContents();
   idxSh.getRange(1, 1, 1, 5).setValues([['Key', 'Label', 'Value', 'ChangePct', 'Change']]);
-  const idxRows = INDEX_LIST.map(ix => [
-    ix.key, ix.label,
-    '=IFERROR(GOOGLEFINANCE("' + ix.ticker + '","price"), 0)',
-    '=IFERROR(GOOGLEFINANCE("' + ix.ticker + '","changepct"), 0)',
-    '=IFERROR(GOOGLEFINANCE("' + ix.ticker + '","change"), 0)'
-  ]);
+  const usdInrRate = fetchUsdInrRate_();
+  const idxRows = INDEX_LIST.map(ix => {
+    if (ix.key === 'USDINR') {
+      // No day-change available from the free rate API — change/changePct left at 0.
+      return [ix.key, ix.label, usdInrRate, 0, 0];
+    }
+    return [
+      ix.key, ix.label,
+      '=IFERROR(GOOGLEFINANCE("' + ix.ticker + '","price"), 0)',
+      '=IFERROR(GOOGLEFINANCE("' + ix.ticker + '","changepct"), 0)',
+      '=IFERROR(GOOGLEFINANCE("' + ix.ticker + '","change"), 0)'
+    ];
+  });
   idxSh.getRange(2, 1, idxRows.length, 5).setValues(idxRows);
 
   SpreadsheetApp.flush();
@@ -413,21 +443,28 @@ function clearAIResults() {
 /* ====================== ONE BATCH → ONE COMBINED CALL ====================== */
 
 function analyzeSymbols_(batch, data) {
-  const ctx = batch.map(sym => {
+  const ctx = batch.map((sym, i) => {
     const h = data.p1.find(x => x.sym === sym) || data.p2.find(x => x.sym === sym);
     const pr = data.prices[sym] || {};
     const netChg = (h && h.avg > 0 && pr.ltp) ? (((pr.ltp - h.avg) / h.avg) * 100).toFixed(1) : 'n/a';
-    return sym + ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
+    return (i + 1) + ') SYMBOL=' + sym + ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
       ' | LTP:' + (pr.ltp || 'n/a') + ' | vs cost:' + netChg + '%' +
       ' | day:' + (pr.dayChg != null ? Number(pr.dayChg).toFixed(1) + '%' : 'n/a');
   }).join('\n');
 
   const prompt =
     'You are an Indian equity analyst. Today is ' + new Date().toDateString() + '.\n' +
-    'For EACH NSE stock below, based on current Indian market conditions, sector outlook and the position data, give:\n' +
+    'Below are ' + batch.length + ' completely INDEPENDENT NSE stocks, each numbered and on its own line. ' +
+    'Treat each one as a separate, isolated analysis — do not let the sector, business, or news context of one ' +
+    'stock bleed into your answer for another. Before writing each answer, re-read that stock\'s own SYMBOL and ' +
+    'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one.\n' +
+    'For EACH stock, give:\n' +
     '1. suggestion: exactly one of BUY, HOLD, SELL ON RALLY, EXIT NOW\n' +
-    '2. rationale: ONE brief complete sentence (max 25 words) that conveys the full reasoning — sector trend, valuation, momentum, or business driver. No generic filler.\n' +
-    '3. alternate: ONLY for EXIT NOW / SELL ON RALLY, one stronger same-sector NSE symbol (like SYRMA over DIXON); else ""\n\n' +
+    '2. rationale: ONE brief complete sentence (max 25 words) that conveys the full reasoning — sector trend, valuation, momentum, or business driver, SPECIFIC to that one company. No generic filler.\n' +
+    '3. alternate: ONLY for EXIT NOW / SELL ON RALLY. Must be an NSE symbol from the EXACT SAME sector/industry as this stock ' +
+    '(e.g. SYRMA for DIXON — both electronics manufacturing; INFY for TCS — both IT services). ' +
+    'If you cannot name a genuinely same-sector stock that is a clear improvement, output "" — an empty string is far better than a wrong-sector guess. ' +
+    'Never suggest a different-sector stock just to fill the field, and never reuse the same alternate symbol for two stocks in this batch that are not themselves in the same sector as each other.\n\n' +
     ctx + '\n\n' +
     'Respond ONLY with a JSON array, no markdown:\n' +
     '[{"symbol":"SYM","suggestion":"...","rationale":"...","alternate":"..."}]';
