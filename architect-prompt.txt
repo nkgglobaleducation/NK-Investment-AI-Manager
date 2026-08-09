@@ -1,0 +1,1005 @@
+Act as a Principal Google Apps Script Architect, AI Agent Engineer, Portfolio-Analytics Engineer and QA Engineer.
+
+You are working directly inside my existing project:
+
+NK Academy — Data Portal
+NK-Investment-AI-Manager
+
+DO NOT rebuild the application from scratch.
+
+First understand the existing codebase, then improve it incrementally while preserving all currently working functionality.
+
+========================================================
+1. CURRENT PROJECT
+========================================================
+
+Technology:
+- Google Apps Script
+- Google Sheets backend
+- Index.html frontend
+- clasp deployment
+- GitHub used for backup/version control
+
+Important Sheet tabs:
+- P1_Holdings
+- P2_Holdings
+- Screener
+- LivePrices
+- AI_Analysis
+- Indices
+
+Current major functions include:
+- refreshLivePrices()
+- startAIAnalysis()
+- uploadCSV()
+- doGet()
+
+Current AI system:
+- Multiple AI providers / provider slots
+- Groq
+- Gemini
+- Cerebras
+- OpenRouter
+- Mistral
+- provider rotation and cooldown logic
+- background/time-triggered analysis
+- AI output:
+    AI CALL
+    AI RATIONALE
+    ALT
+
+CALL values:
+- BUY
+- HOLD
+- SELL ON RALLY
+- EXIT NOW
+
+========================================================
+2. FIRST TASK — AUDIT, DON'T MODIFY YET
+========================================================
+
+Before changing anything:
+
+1. Read ALL project files.
+2. Map every function and dependency.
+3. Identify:
+   - backend functions
+   - frontend functions
+   - sheet reads/writes
+   - triggers
+   - properties
+   - API calls
+   - AI prompts
+   - AI response parsing
+   - error handling
+   - state/checkpoint handling
+4. Identify duplicated logic.
+5. Identify dead/unreachable code.
+6. Identify functions that can cause race conditions.
+7. Identify unnecessary SpreadsheetApp calls.
+8. Identify places where AI output is trusted without validation.
+
+Then produce a concise architecture map.
+
+DO NOT make changes until this audit is complete.
+
+========================================================
+3. PRIMARY OBJECTIVE
+========================================================
+
+Improve the portal in FIVE dimensions:
+
+A. Reliability
+B. AI-analysis quality
+C. Cross-stock logical consistency
+D. Performance / quota efficiency
+E. User experience
+
+Do NOT optimize one dimension by damaging another.
+
+========================================================
+4. MOST IMPORTANT CHANGE:
+AI SHOULD BE A TWO-STAGE SYSTEM
+========================================================
+
+Current architecture appears to treat the LLM response as the final answer.
+
+Change this concept.
+
+Use:
+
+DATA
+ ↓
+AI ANALYSIS
+ ↓
+STRUCTURED AI RESPONSE
+ ↓
+DETERMINISTIC VALIDATION
+ ↓
+REPAIR / REGENERATE IF REQUIRED
+ ↓
+FINAL OUTPUT
+ ↓
+SAVE TO AI_Analysis
+
+The LLM proposes the decision.
+
+JavaScript validates the decision.
+
+The application must NEVER blindly trust an AI response.
+
+========================================================
+5. STRUCTURED AI RESPONSE
+========================================================
+
+Where practical, require the AI to return structured JSON.
+
+Internally use something similar to:
+
+{
+  "ticker": "TCS",
+  "call": "HOLD",
+  "rationale": "...",
+  "alt": "",
+  "sector": "...",
+  "screener_status": "PASS",
+  "failed_metrics": [],
+  "confidence": 0.78
+}
+
+Do not expose unnecessary diagnostic fields in the existing UI.
+
+The existing user-facing columns should continue to work:
+
+AI CALL
+AI RATIONALE
+ALT
+
+========================================================
+6. AI CALL ↔ RATIONALE CONSISTENCY
+========================================================
+
+Implement deterministic validation.
+
+BUY:
+Rationale must contain a meaningful positive reason.
+
+HOLD:
+Rationale should indicate that the investment thesis remains acceptable but there is insufficient reason to materially increase or reduce.
+
+SELL ON RALLY:
+Rationale must identify a meaningful reason to reduce exposure, such as:
+- valuation
+- deteriorating growth
+- cyclical risk
+- weakening fundamentals
+- inferior risk/reward
+
+EXIT NOW:
+Rationale must identify a serious negative thesis-breaking issue.
+
+Do NOT allow:
+
+EXIT NOW
++
+"Strong fundamentals and attractive long-term prospects"
+
+Likewise do not allow:
+
+BUY
++
+"Severe balance-sheet deterioration"
+
+If mismatch occurs:
+- regenerate the response
+OR
+- downgrade to a logically consistent CALL where appropriate.
+
+Do not blindly change the CALL with hard-coded financial rules.
+
+========================================================
+7. ALT SYSTEM — MAJOR IMPROVEMENT
+========================================================
+
+ALT is OPTIONAL.
+
+NEVER force an ALT.
+
+ALT should be populated only when:
+
+1. CALL is EXIT NOW or SELL ON RALLY
+2. a genuinely better replacement exists
+3. the replacement is a valid listed stock
+4. the replacement is business/sector/theme comparable
+5. replacement is NOT itself EXIT NOW
+6. replacement is NOT itself SELL ON RALLY
+7. replacement is not simply a generic favourite stock
+8. there is sufficient data to justify the replacement
+
+Otherwise:
+
+ALT = ""
+
+========================================================
+8. CROSS-STOCK ALT VALIDATION
+========================================================
+
+This is extremely important.
+
+AI analysis is performed across many stocks.
+
+Therefore ALT validation must consider the COMPLETE analysis batch.
+
+Example:
+
+A → ALT = B
+
+If:
+
+B → EXIT NOW
+
+or
+
+B → SELL ON RALLY
+
+then:
+
+A → B is INVALID.
+
+Do not save it.
+
+Regenerate another ALT or leave ALT blank.
+
+Also detect:
+
+A → B
+B → A
+
+and unnecessary chains such as:
+
+A → B
+B → C
+C → A
+
+Do not allow circular replacement logic.
+
+========================================================
+9. ALT BUSINESS COMPARABILITY
+========================================================
+
+Do NOT judge ALT only by whether it is a "good company".
+
+Classify businesses into sectors/industries/business models.
+
+Examples:
+
+IT Services
+ER&D
+Auto
+Auto Components
+Banking
+NBFC
+Insurance
+Pharma
+FMCG
+Consumer
+Retail
+Paints
+Chemicals
+Cement
+Metals
+Power
+Electrical Equipment
+Capital Goods
+Defence
+Railways
+EMS
+Semiconductor
+OSAT
+Telecom Equipment
+Optical Fibre
+Renewables
+Oil & Gas
+Utilities
+Financial Market Infrastructure
+
+ALT should preferably be:
+
+same business
+OR
+same industry
+OR
+same end-market
+OR
+clearly comparable investment theme.
+
+Do not use a famous stock as a universal replacement.
+
+Example:
+
+TCS → INFY
+GOOD
+
+Dixon → Kaynes
+POTENTIALLY GOOD
+
+Dixon → HDFCBANK
+BAD
+
+Asian Paints → TCS
+BAD
+
+========================================================
+10. REUSED ALT DETECTION
+========================================================
+
+Track ALT frequency across the complete batch.
+
+If:
+
+TCS
+
+is recommended as ALT for:
+
+Stock A
+Stock B
+Stock C
+Stock D
+
+do not automatically accept all four.
+
+Determine whether the substitutions are actually appropriate.
+
+If unrelated stocks repeatedly receive the same ALT:
+- flag as generic fallback
+- regenerate
+- or blank ALT.
+
+========================================================
+11. TICKER VALIDATION
+========================================================
+
+Before saving ALT:
+
+- normalize ticker
+- trim whitespace
+- remove accidental punctuation
+- verify against the known stock universe
+- ensure it is a valid NSE/BSE equity ticker where applicable
+
+If invalid:
+
+ALT = ""
+
+Never allow hallucinated ticker symbols into AI_Analysis.
+
+========================================================
+12. SCREENER INTEGRATION
+========================================================
+
+User's current screener:
+
+((Market Capitalization > 99000 AND Debt to equity < 0.75 AND Sales growth 3Years>3.5% AND
+Average return on equity 3Years > 10% AND Average return on capital employed 3Years > 15%) OR
+(Market Capitalization > 9000 AND Debt to equity < 1 AND Sales growth 5Years >20% AND
+Average return on equity 5Years > 20% AND Average return on capital employed 5Years >24%))
+AND
+(CROIC > 1% AND Pledged percentage < 10% AND YOY Quarterly sales growth > 1% AND
+5Y OCF BY AVG EARNINGS >0.3 AND
+Market Capitalization 7years back >10 AND
+Market Capitalization>Market Capitalization 5years back)
+
+Treat this as a QUALITY/GROWTH SCREEN.
+
+IMPORTANT:
+
+Failing the screener does NOT automatically mean SELL.
+
+The AI must distinguish:
+
+1. Passes screener
+2. Fails screener
+3. Not part of screener universe
+
+If data is available, identify the actual failed criteria.
+
+Example:
+
+"Fails screener primarily because 5Y ROCE is below 24%; revenue growth and balance-sheet quality remain supportive."
+
+This is much better than:
+
+"Fails fundamentals."
+
+========================================================
+13. SCREENER VS AI CALL
+========================================================
+
+Do NOT create a hard-coded rule:
+
+FAIL SCREENER → SELL
+
+Instead:
+
+Screener = one important input.
+
+AI should consider:
+- fundamentals
+- growth
+- valuation
+- cash flow
+- balance sheet
+- business quality
+- sector outlook
+- current market conditions
+- user's existing exposure
+- screener status
+
+========================================================
+14. RATIONALE QUALITY
+========================================================
+
+Every rationale must contain at least ONE company-specific reason.
+
+Avoid generic:
+
+"Strong company with good fundamentals."
+
+"Good long-term prospects."
+
+"Valuation is a concern."
+
+Instead:
+
+"Strong ROCE and cash conversion support HOLD despite elevated valuation."
+
+or:
+
+"5Y ROCE remains below your screener threshold and cash conversion is weak, reducing conviction despite strong revenue growth."
+
+Keep the current UI's one-line rationale style.
+
+========================================================
+15. PREVENT REPETITIVE AI OUTPUT
+========================================================
+
+After generating the complete batch:
+
+compare rationales.
+
+Detect:
+- exact duplicates
+- near-duplicate sentences
+- generic repeated phrases
+
+If substantially identical rationales occur across unrelated companies:
+regenerate them using company-specific information.
+
+Do not make rationales artificially different merely for the sake of variation.
+
+The goal is genuine stock-specific reasoning.
+
+========================================================
+16. PORTFOLIO-AWARE ANALYSIS
+========================================================
+
+The system has:
+
+P1
+P2
+Screener shortlist
+
+AI should know whether the stock is:
+
+- P1 holding
+- P2 holding
+- Screener candidate
+- both holding and screener candidate
+- outside current holdings
+
+This information should influence the rationale where appropriate.
+
+For example:
+
+If user already has four stocks in the same sector, a new BUY recommendation should consider concentration.
+
+Do not automatically reject a stock because it is already held.
+
+========================================================
+17. PORTFOLIO CONCENTRATION
+========================================================
+
+Add internal sector exposure awareness.
+
+Example:
+
+If portfolio contains:
+Dixon
+Syrma
+Kaynes
+Tata Elxsi
+Tata Technologies
+
+the system should recognize meaningful electronics/technology concentration.
+
+This does NOT mean automatically selling.
+
+Instead the rationale may mention:
+
+"Business quality remains attractive, but additional exposure would increase existing electronics concentration."
+
+========================================================
+18. AI PROVIDER ENGINE
+========================================================
+
+Preserve the existing multi-provider architecture.
+
+Improve:
+
+- provider fallback
+- timeout handling
+- exponential backoff
+- malformed JSON handling
+- rate-limit handling
+- provider cooldown
+- retry logic
+- provider failure logging
+
+Do not allow one failed provider to terminate the entire batch.
+
+========================================================
+19. PROVIDER QUALITY TRACKING
+========================================================
+
+Add internal statistics for each provider:
+
+- successful calls
+- failed calls
+- timeout count
+- malformed response count
+- average response time
+- validation failure count
+
+Do not expose API keys.
+
+This will help identify which provider produces the most reliable financial analysis.
+
+========================================================
+20. AI RESPONSE REPAIR
+========================================================
+
+If AI returns malformed JSON:
+
+1. attempt safe extraction
+2. if unsuccessful, retry/repair
+3. if still unsuccessful, mark provider failure
+4. move to next provider
+
+Never write malformed AI output into AI_Analysis.
+
+========================================================
+21. BACKGROUND JOB RELIABILITY
+========================================================
+
+Review startAIAnalysis().
+
+Ensure the process survives:
+
+- browser closure
+- temporary provider failure
+- Apps Script execution timeout
+- trigger failure
+- partial batch completion
+
+Use checkpoint state.
+
+Store:
+- batch ID
+- current index
+- completed count
+- failed count
+- timestamp
+- current provider
+- retry state
+
+Resume from checkpoint instead of restarting the entire analysis.
+
+========================================================
+22. GAS EXECUTION LIMIT
+========================================================
+
+Protect against Apps Script execution limits.
+
+Before timeout:
+
+- checkpoint state
+- cleanly terminate
+- create/continue trigger
+- resume automatically
+
+Do not create duplicate triggers.
+
+Create a robust trigger cleanup mechanism.
+
+========================================================
+23. LOCKING
+========================================================
+
+Use LockService appropriately for:
+
+- refreshLivePrices()
+- uploadCSV()
+- startAIAnalysis()
+- checkpoint updates
+- trigger management
+
+Avoid unnecessarily holding locks during long external API calls.
+
+Lock only the critical state-changing sections.
+
+========================================================
+24. GOOGLE SHEETS PERFORMANCE
+========================================================
+
+Audit all SpreadsheetApp operations.
+
+Prefer:
+
+getValues()
+setValues()
+
+over:
+
+getValue()
+setValue()
+
+inside loops.
+
+Minimize:
+- SpreadsheetApp.flush()
+- repeated sheet lookups
+- repeated getRange()
+- repeated getLastRow()
+- repeated formula insertion
+
+Read data once.
+Process in memory.
+Write back in bulk.
+
+========================================================
+25. LIVE PRICE ENGINE
+========================================================
+
+Review refreshLivePrices().
+
+Preserve the existing approach of:
+
+GOOGLEFINANCE
+→ calculate metrics
+→ freeze values
+
+But ensure:
+- formulas do not accumulate
+- stale data is detected
+- failed GOOGLEFINANCE values do not overwrite valid existing data
+- historical scans are efficient
+- duplicate tickers are avoided
+
+========================================================
+26. DATA INTEGRITY
+========================================================
+
+Normalize stock identifiers across:
+
+P1_Holdings
+P2_Holdings
+Screener
+LivePrices
+AI_Analysis
+
+Prevent:
+
+TCS
+TCS.NS
+TCS-EQ
+
+from being treated as different companies when they represent the same security.
+
+Handle:
+- blank tickers
+- duplicate tickers
+- malformed rows
+- missing prices
+- missing PE
+- missing market cap
+
+gracefully.
+
+========================================================
+27. FRONTEND UX
+========================================================
+
+Do not redesign the current UI unless necessary.
+
+Improve:
+
+- loading indicators
+- AI analysis progress
+- last refresh time
+- analysis status
+- failed provider indication
+- stale data indication
+- error messages
+
+The user should always know:
+
+LIVE PRICE STATUS
+AI ANALYSIS STATUS
+LAST UPDATED
+NUMBER OF STOCKS ANALYSED
+NUMBER PENDING
+NUMBER FAILED
+
+Do not block the entire UI during long-running operations.
+
+========================================================
+28. PREVIEW MODE
+========================================================
+
+Preserve the existing preview-mode safety guard.
+
+When opened outside Apps Script:
+
+- render UI safely
+- do not execute write operations
+- do not call APIs
+- do not modify Sheets
+
+========================================================
+29. DIAGNOSTIC / AUDIT MODE
+========================================================
+
+Add an optional developer/debug mode.
+
+It should be possible to inspect:
+
+- provider used
+- retry count
+- AI response validation
+- screener status
+- failed screener metrics
+- ALT validation
+- rationale validation
+- duplicate rationale detection
+- analysis timestamp
+
+Do not expose sensitive API keys.
+
+Do not clutter the normal user interface.
+
+========================================================
+30. IMPORTANT: DO NOT HARD-CODE INVESTMENT DECISIONS
+========================================================
+
+Do NOT implement:
+
+IF PE > X → SELL
+IF LOSS > X → SELL
+IF BELOW 52W HIGH BY X% → BUY
+
+unless such rules already exist and are explicitly required.
+
+The user specifically wants AI judgment.
+
+Use deterministic code primarily for:
+
+- validation
+- consistency
+- data integrity
+- ticker validation
+- duplicate detection
+- state management
+- technical reliability
+
+AI remains responsible for judgment.
+
+========================================================
+31. SECURITY
+========================================================
+
+Audit:
+
+- API keys
+- ScriptProperties
+- UserProperties
+- client-side exposure
+- HTML templating
+- logging
+
+Never expose provider API keys to Index.html.
+
+Never put secrets in GitHub.
+
+Check whether logs accidentally contain secrets.
+
+========================================================
+32. CODE STRUCTURE
+========================================================
+
+If the current code is monolithic, modularize ONLY where beneficial.
+
+Preferred structure:
+
+Config.gs
+SheetRepo.gs
+PriceEngine.gs
+AIEngine.gs
+AIValidator.gs
+AIProvider.gs
+TriggerManager.gs
+PortfolioEngine.gs
+WebApp.gs
+Utils.gs
+
+But DO NOT split files merely for cosmetic reasons.
+
+Preserve clasp compatibility.
+
+========================================================
+33. TESTING
+========================================================
+
+Before declaring completion:
+
+create/test at least the following cases:
+
+TEST 1:
+A → B
+B = EXIT NOW
+Expected:
+A ALT cannot be B.
+
+TEST 2:
+A → B
+B = SELL ON RALLY
+Expected:
+A ALT cannot be B.
+
+TEST 3:
+A → B
+B = HOLD
+Expected:
+Allowed if business comparable.
+
+TEST 4:
+Five unrelated stocks → TCS
+Expected:
+Generic ALT detection.
+
+TEST 5:
+Asian Paints → TCS
+Expected:
+Sector/business mismatch.
+
+TEST 6:
+EXIT NOW + positive rationale
+Expected:
+Validation failure.
+
+TEST 7:
+BUY + severe negative rationale
+Expected:
+Validation failure.
+
+TEST 8:
+Invalid ticker
+Expected:
+ALT blank.
+
+TEST 9:
+Duplicate rationale across unrelated stocks
+Expected:
+Detected.
+
+TEST 10:
+Malformed AI JSON
+Expected:
+Repair/retry/provider fallback.
+
+========================================================
+34. PERFORMANCE TEST
+========================================================
+
+Compare before/after where measurable:
+
+- execution time
+- Spreadsheet calls
+- provider calls
+- trigger count
+- batch completion reliability
+
+Do not claim improvement unless measured.
+
+========================================================
+35. BACKWARD COMPATIBILITY
+========================================================
+
+Do not break:
+
+- existing Google Sheet tabs
+- existing column names
+- existing CSV import
+- existing P1/P2 structure
+- existing watchlist stars
+- existing deployment
+- existing provider configuration
+- existing user workflow
+
+If a schema change is genuinely necessary:
+
+STOP and explain it before making the change.
+
+========================================================
+36. IMPLEMENTATION PROCESS
+========================================================
+
+Work in this order:
+
+PHASE 1
+Audit current code.
+
+PHASE 2
+Identify highest-risk problems.
+
+PHASE 3
+Implement AI structured-output + validation.
+
+PHASE 4
+Implement batch-level ALT consistency.
+
+PHASE 5
+Improve provider/retry/checkpoint engine.
+
+PHASE 6
+Optimize Sheet I/O.
+
+PHASE 7
+Improve frontend status/progress.
+
+PHASE 8
+Run tests.
+
+PHASE 9
+Review all modified files for regressions.
+
+========================================================
+37. FINAL REPORT TO ME
+========================================================
+
+After implementation, provide:
+
+1. Files modified
+2. Functions modified
+3. Problems discovered
+4. Problems fixed
+5. AI consistency improvements
+6. ALT validation improvements
+7. Provider reliability improvements
+8. Performance improvements
+9. Tests performed
+10. Any remaining risks
+11. Exact clasp commands required, if any
+
+DO NOT simply say "implemented successfully."
+
+Give concrete technical details.
+
+MOST IMPORTANT:
+
+Do not optimize this project merely as a Google Apps Script dashboard.
+
+Optimize it as a RELIABLE AI-ASSISTED PORTFOLIO ANALYSIS SYSTEM where:
+
+DATA → AI JUDGMENT → VALIDATION → CONSISTENCY CHECK → FINAL DECISION
+
+The application must never blindly trust an individual LLM response.
