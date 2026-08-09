@@ -152,11 +152,18 @@ function uploadCSV(type, csvText) {
       const c = String(rows[i][0] || '').trim();
       if (c) codes.push([c]);
     }
-    const sh = getSheet_(TAB_SCREENER, ['NSE_Code']);
-    sh.clearContents();
-    sh.getRange(1, 1).setValue('NSE_Code');
-    if (codes.length) sh.getRange(2, 1, codes.length, 1).setValues(codes);
-    setMeta_('SCREENER_SAVED', now);
+    // Lock only the sheet write — CSV parsing above is in-memory and needs no exclusivity.
+    const lock = LockService.getScriptLock();
+    if (!lock.tryLock(10000)) throw new Error('Another upload is in progress — try again in a moment.');
+    try {
+      const sh = getSheet_(TAB_SCREENER, ['NSE_Code']);
+      sh.clearContents();
+      sh.getRange(1, 1).setValue('NSE_Code');
+      if (codes.length) sh.getRange(2, 1, codes.length, 1).setValues(codes);
+      setMeta_('SCREENER_SAVED', now);
+    } finally {
+      lock.releaseLock();
+    }
     return { count: codes.length, saved: now };
   }
 
@@ -174,11 +181,18 @@ function uploadCSV(type, csvText) {
     data.push([sym, Number(rows[i][iQty]) || 0, Number(rows[i][iCost]) || 0]);
   }
   const tab = (type === 'P1') ? TAB_P1 : TAB_P2;
-  const sh = getSheet_(tab, ['Instrument', 'Qty', 'AvgCost']);
-  sh.clearContents();
-  sh.getRange(1, 1, 1, 3).setValues([['Instrument', 'Qty', 'AvgCost']]);
-  if (data.length) sh.getRange(2, 1, data.length, 3).setValues(data);
-  setMeta_(type + '_SAVED', now);
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error('Another upload is in progress — try again in a moment.');
+  try {
+    const sh = getSheet_(tab, ['Instrument', 'Qty', 'AvgCost']);
+    sh.clearContents();
+    sh.getRange(1, 1, 1, 3).setValues([['Instrument', 'Qty', 'AvgCost']]);
+    if (data.length) sh.getRange(2, 1, data.length, 3).setValues(data);
+    setMeta_(type + '_SAVED', now);
+  } finally {
+    lock.releaseLock();
+  }
   return { count: data.length, saved: now };
 }
 
@@ -239,16 +253,20 @@ function getInitialData() {
   const watchlist = JSON.parse(
     PropertiesService.getUserProperties().getProperty('WATCHLIST') || '[]');
 
+  // Read TAB_AI once and reuse it — getAIProgress() also calls readAI_() internally, and
+  // calling that full function here (just to get .status) used to read TAB_AI a second time.
+  const ai = readAI_();
+
   return {
     p1: p1, p2: p2, screener: screener,
-    prices: prices, ai: readAI_(), watchlist: watchlist, indices: readIndices_(),
+    prices: prices, ai: ai, watchlist: watchlist, indices: readIndices_(),
     meta: {
       p1Saved: getMeta_('P1_SAVED'), p2Saved: getMeta_('P2_SAVED'),
       screenerSaved: getMeta_('SCREENER_SAVED'),
       pricesSaved: getMeta_('PRICES_SAVED'), aiSaved: getMeta_('AI_SAVED')
     },
     keys: getKeyStatus(),
-    aiStatus: getAIProgress().status
+    aiStatus: getAIStatus_()
   };
 }
 
@@ -258,10 +276,6 @@ function refreshLivePrices() {
   const data = getInitialData();
   const symbols = uniqueSymbols_(data);
   if (!symbols.length) throw new Error('No stocks loaded. Upload CSV files first.');
-
-  const sh = getSheet_(TAB_PRICES, ['Symbol', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']);
-  sh.clearContents();
-  sh.getRange(1, 1, 1, 8).setValues([['Symbol', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']]);
 
   // NOTE: GOOGLEFINANCE's real attribute names are "high52" / "low52" (NOT "52weekhigh"/"52weeklow" —
   // those don't exist and silently fail to the IFERROR fallback, which is why they showed 0.0% before).
@@ -273,6 +287,8 @@ function refreshLivePrices() {
   // MarketCap and PE are real-time attributes (not historical), so they behave like LTP/DAY% — no
   // wait-time or Apps-Script-read concerns. PE will legitimately come back 0/blank for loss-making
   // companies (negative or undefined P/E) — that's expected, not a bug.
+  // Formula strings + the USD/INR fetch are built in-memory before any locking — no need for
+  // exclusivity here, and the external HTTP call must never happen while holding the lock.
   const rows = symbols.map(s => [
     s,
     '=IFERROR(GOOGLEFINANCE("NSE:' + s + '","price"), IFERROR(GOOGLEFINANCE("BOM:' + s + '","price"), 0))',
@@ -283,13 +299,6 @@ function refreshLivePrices() {
     '=IFERROR(GOOGLEFINANCE("NSE:' + s + '","marketcap"), IFERROR(GOOGLEFINANCE("BOM:' + s + '","marketcap"), 0))',
     '=IFERROR(GOOGLEFINANCE("NSE:' + s + '","pe"), IFERROR(GOOGLEFINANCE("BOM:' + s + '","pe"), 0))'
   ]);
-  sh.getRange(2, 1, rows.length, 8).setValues(rows);
-
-  // Market indices — same refresh cycle as stock prices. These are simple real-time attributes
-  // (not historical like ATH), so they resolve fast and don't need their own separate wait.
-  const idxSh = getSheet_(TAB_INDICES, ['Key', 'Label', 'Value', 'ChangePct', 'Change']);
-  idxSh.clearContents();
-  idxSh.getRange(1, 1, 1, 5).setValues([['Key', 'Label', 'Value', 'ChangePct', 'Change']]);
   const usdInrRate = fetchUsdInrRate_();
   const idxRows = INDEX_LIST.map(ix => {
     if (ix.key === 'USDINR') {
@@ -303,16 +312,46 @@ function refreshLivePrices() {
       '=IFERROR(GOOGLEFINANCE("' + ix.ticker + '","change"), 0)'
     ];
   });
-  idxSh.getRange(2, 1, idxRows.length, 5).setValues(idxRows);
 
-  SpreadsheetApp.flush();
-  Utilities.sleep(LIVE_PRICES_WAIT_MS);
+  // Lock #1: the initial clear + formula write only. Released before the long GOOGLEFINANCE
+  // settle-wait below so this doesn't block other locked operations (e.g. an AI batch tick)
+  // for the full 15s+ — see Section 23 of architect-prompt.txt.
+  let sh, idxSh;
+  const lock1 = LockService.getScriptLock();
+  if (!lock1.tryLock(10000)) throw new Error('Another price refresh is already running — try again in a moment.');
+  try {
+    sh = getSheet_(TAB_PRICES, ['Symbol', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']);
+    sh.clearContents();
+    sh.getRange(1, 1, 1, 8).setValues([['Symbol', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']]);
+    sh.getRange(2, 1, rows.length, 8).setValues(rows);
 
-  const vals = sh.getRange(2, 1, rows.length, 8).getValues();
-  sh.getRange(2, 1, rows.length, 8).setValues(vals); // freeze values
+    // Market indices — same refresh cycle as stock prices. These are simple real-time attributes
+    // (not historical like ATH), so they resolve fast and don't need their own separate wait.
+    idxSh = getSheet_(TAB_INDICES, ['Key', 'Label', 'Value', 'ChangePct', 'Change']);
+    idxSh.clearContents();
+    idxSh.getRange(1, 1, 1, 5).setValues([['Key', 'Label', 'Value', 'ChangePct', 'Change']]);
+    idxSh.getRange(2, 1, idxRows.length, 5).setValues(idxRows);
 
-  const idxVals = idxSh.getRange(2, 1, idxRows.length, 5).getValues();
-  idxSh.getRange(2, 1, idxRows.length, 5).setValues(idxVals); // freeze values
+    SpreadsheetApp.flush();
+  } finally {
+    lock1.releaseLock();
+  }
+
+  Utilities.sleep(LIVE_PRICES_WAIT_MS); // unlocked — just waiting for GOOGLEFINANCE to settle
+
+  // Lock #2: the freeze (read-back + rewrite as static values) — the other critical write section.
+  let vals, idxVals;
+  const lock2 = LockService.getScriptLock();
+  if (!lock2.tryLock(10000)) throw new Error('Another price refresh is already running — try again in a moment.');
+  try {
+    vals = sh.getRange(2, 1, rows.length, 8).getValues();
+    sh.getRange(2, 1, rows.length, 8).setValues(vals); // freeze values
+
+    idxVals = idxSh.getRange(2, 1, idxRows.length, 5).getValues();
+    idxSh.getRange(2, 1, idxRows.length, 5).setValues(idxVals); // freeze values
+  } finally {
+    lock2.releaseLock();
+  }
 
   const now = nowIST_();
   setMeta_('PRICES_SAVED', now);
@@ -366,7 +405,8 @@ function startAIAnalysis() {
   killTriggers_();
   setStatus_({ running:true, done:pend.total - pend.symbols.length, total:pend.total, msg:'Starting…' });
   ScriptApp.newTrigger(TRIGGER_HANDLER).timeBased().everyMinutes(1).create();
-  processAIBatch(); // first batch right away
+  processAIBatch(pend); // first batch right away — reuse the pending-symbols data computed above
+                          // instead of making processAIBatch() re-run getInitialData() from scratch
   return getAIProgress();
 }
 
@@ -377,11 +417,15 @@ function stopAIAnalysis() {
   return getAIProgress();
 }
 
-function processAIBatch() {
+// precomputedPend (optional): when startAIAnalysis() calls this inline for the first batch, it
+// passes its own already-fresh pendingSymbols_() result to avoid a second getInitialData() call.
+// When Apps Script invokes this as the time-driven trigger handler, it's called with a time-event
+// object instead (not this shape — no .symbols field), so the check below falls back correctly.
+function processAIBatch(precomputedPend) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return; // another batch still running — skip this tick
   try {
-    const pend = pendingSymbols_();
+    const pend = (precomputedPend && precomputedPend.symbols) ? precomputedPend : pendingSymbols_();
     if (!pend.symbols.length) {
       killTriggers_();
       setMeta_('AI_SAVED', nowIST_());
@@ -423,10 +467,16 @@ function killTriggers_() {
 
 function setStatus_(o) { o.ts = Date.now(); props_().setProperty('AI_STATUS', JSON.stringify(o)); }
 
-function getAIProgress() {
+// Just the status property, no sheet read — shared by getInitialData() (which already has its
+// own `ai` from a single readAI_() call) and getAIProgress() (which needs both, see below).
+function getAIStatus_() {
   const s = props_().getProperty('AI_STATUS');
+  return s ? JSON.parse(s) : { running:false, done:0, total:0, msg:'' };
+}
+
+function getAIProgress() {
   return {
-    status: s ? JSON.parse(s) : { running:false, done:0, total:0, msg:'' },
+    status: getAIStatus_(),
     ai: readAI_()
   };
 }
@@ -469,7 +519,15 @@ function analyzeSymbols_(batch, data) {
     'Respond ONLY with a JSON array, no markdown:\n' +
     '[{"symbol":"SYM","suggestion":"...","rationale":"...","alternate":"..."}]';
 
-  const text = aiChat_(prompt, 2200);
+  return aiChat_(prompt, 2200, parseAnalysisResponse_);
+}
+
+// Turns one provider's raw text into the {SYMBOL: {suggestion,rationale,alternate}} map.
+// Passed into aiChat_() as its parseResponse callback so a malformed/empty response is caught
+// by the SAME per-slot try/catch that already handles HTTP/network failures — this slot is
+// skipped and rotation moves to the next one, instead of the parse error escaping the loop
+// and failing the whole batch.
+function parseAnalysisResponse_(text) {
   const out = {};
   parseJsonArray_(text).forEach(o => {
     if (!o.symbol) return;
@@ -485,7 +543,10 @@ function analyzeSymbols_(batch, data) {
 
 /* ====================== SLOT ROTATION ENGINE ====================== */
 
-function aiChat_(prompt, maxTokens) {
+// parseResponse (optional): called on each slot's raw text before it's accepted. Throwing
+// from it (e.g. malformed JSON) is treated exactly like an API/network failure for that slot —
+// caught below, logged, and rotation continues to the next slot. Only returns raw text if omitted.
+function aiChat_(prompt, maxTokens, parseResponse) {
   const p = props_();
   let lastErr = 'No API keys saved.';
   for (let i = 0; i < AI_SLOTS.length; i++) {
@@ -497,8 +558,9 @@ function aiChat_(prompt, maxTokens) {
       const text = (slot.kind === 'gemini')
         ? geminiCall_(key, slot.m, prompt, maxTokens)
         : openaiCall_(key, slot.url, slot.m, prompt, maxTokens);
+      const result = parseResponse ? parseResponse(text) : text;
       Logger.log('✓ ' + slot.p + '/' + slot.m + ' answered.');
-      return text;
+      return result;
     } catch (e) {
       lastErr = slot.p + '/' + slot.m + ': ' + e.message;
       Logger.log('✗ ' + lastErr + ' → next slot');
@@ -580,21 +642,30 @@ function parseJsonArray_(text) {
   return JSON.parse(clean.slice(start, end + 1));
 }
 
+// Reads the existing AI_Analysis block once, applies this batch's results to it in memory, then
+// writes back in at most 2 bulk setValues() calls — one for updates to existing rows (rewritten
+// as a single contiguous block), one for newly-appended symbols — instead of up to AI_BATCH_SIZE
+// separate per-row writes. A single call isn't possible for the update case because matched rows
+// can be scattered anywhere in the sheet and setValues() requires one contiguous range.
 function persistAI_(results) {
   const sh = getSheet_(TAB_AI, ['Symbol', 'Suggestion', 'Rationale', 'Alternate', 'Updated']);
-  const existing = {};
-  if (sh.getLastRow() > 1) {
-    sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues().forEach((r, i) => {
-      existing[String(r[0])] = i + 2;
-    });
-  }
   const now = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'dd MMM HH:mm');
+
+  const lastRow = sh.getLastRow();
+  const existingRows = (lastRow > 1) ? sh.getRange(2, 1, lastRow - 1, 5).getValues() : [];
+  const existingIndex = {}; // symbol -> index into existingRows
+  existingRows.forEach((r, i) => { existingIndex[String(r[0])] = i; });
+
+  const newRows = [];
   Object.keys(results).forEach(sym => {
     const r = results[sym];
     const row = [sym, r.suggestion, r.rationale, r.alternate, now];
-    if (existing[sym]) sh.getRange(existing[sym], 1, 1, 5).setValues([row]);
-    else sh.appendRow(row);
+    if (sym in existingIndex) existingRows[existingIndex[sym]] = row; // update in-memory copy
+    else newRows.push(row); // collect for a single bulk append
   });
+
+  if (existingRows.length) sh.getRange(2, 1, existingRows.length, 5).setValues(existingRows);
+  if (newRows.length) sh.getRange(sh.getLastRow() + 1, 1, newRows.length, 5).setValues(newRows);
 }
 
 /* ====================== WATCHLIST ====================== */
