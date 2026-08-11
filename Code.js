@@ -434,7 +434,14 @@ function processAIBatch(precomputedPend) {
     }
     const batch = pend.symbols.slice(0, AI_BATCH_SIZE);
     try {
-      const results = analyzeSymbols_(batch, pend.data);
+      const rawResults = analyzeSymbols_(batch, pend.data);
+      // DATA → AI ANALYSIS → STRUCTURED AI RESPONSE → DETERMINISTIC VALIDATION → SAVE
+      // (architect-prompt.txt Section 4). Never persist a raw AI response as-is.
+      Object.keys(rawResults).forEach(sym => {
+        forceNoDataOverride_(sym, rawResults[sym], pend.data.prices);
+        validateEntry_(sym, rawResults[sym]);
+      });
+      const results = applyBatchAltConsistency_(rawResults, pend.data.ai);
       persistAI_(results);
       const done = pend.total - pend.symbols.length + Object.keys(results).length;
       setStatus_({ running:true, done:done, total:pend.total,
@@ -492,12 +499,62 @@ function clearAIResults() {
 
 /* ====================== ONE BATCH → ONE COMBINED CALL ====================== */
 
+// Fixed, controlled vocabulary for "sector" / "alt_sector" (architect-prompt.txt Section 9).
+// Forcing the model to pick from this exact list — rather than free text — is what makes
+// sector-comparability checkable by plain string equality in validateEntry_() below, with no
+// fuzzy matching or extra AI round-trip needed.
+const SECTOR_LIST = [
+  'IT Services','ER&D','Auto','Auto Components','Banking','NBFC','Insurance','Pharma',
+  'Healthcare Services','FMCG','Tobacco','Consumer Durables','Retail','Jewellery','Paints','Chemicals',
+  'Agrochemicals','Cement','Building Materials','Metals & Mining','Power','Electrical Equipment',
+  'Capital Goods','Defence','Railways','EMS','Semiconductor','Telecom Equipment','Telecom Services',
+  'Renewables','Oil & Gas','Utilities','Financial Market Infrastructure','Hotels & Hospitality',
+  'Aviation','Logistics & Ports','Real Estate','Media & Entertainment','Textiles',
+  'Internet & E-commerce','Beverages','Diversified Conglomerate','Other'
+];
+
+// Ground-truth overrides for specific symbol pairs already observed slipping past the AI's own
+// sector self-report (e.g. OLAELEC and HAVELLS both got labeled the same sector despite being
+// EV/auto vs electrical equipment). When BOTH a stock and its ALT are in this map, their mapped
+// values are used INSTEAD of the AI's self-reported sector/alt_sector for comparison — this beats
+// the AI's own report even if it claims a match. Anything not in the map falls back to the AI's
+// self-report as before. Add pairs here as new mismatches are observed in practice.
+const KNOWN_SECTOR_MAP = {
+  'OLAELEC': 'Auto', 'HAVELLS': 'Electrical Equipment',
+  'PGHH': 'FMCG', 'DRREDDY': 'Pharma',
+  'BANCOINDIA': 'Auto Components', 'BAJFINANCE': 'NBFC',
+  'INDUSTOWER': 'Telecom Equipment', 'BHARTIARTL': 'Telecom Services',
+  'ADANIENT': 'Diversified Conglomerate', 'ULTRACEMCO': 'Cement',
+  'GODFRYPHLP': 'Tobacco', 'BRITANNIA': 'FMCG',
+  'JWL': 'Railways', 'TBZ': 'Jewellery',
+  'TMPV': 'Auto', 'TMCV': 'Auto',
+  'RAINBOW': 'Healthcare Services',
+  'KALAMANDIR': 'Retail', 'GRASIM': 'Diversified Conglomerate',
+  'TATATECH': 'ER&D', 'MOTHSON': 'Auto Components', 'MOTHERSON': 'Auto Components',
+  // Confirmed AI company-identity confusion, not just a sector mismatch — e.g. ACE's rationale
+  // literally described "Aarti Industries" (a different company entirely), and APARINDS's
+  // rationale described a "cement business" it doesn't have. Ground truth here corrects that.
+  'ACE': 'Capital Goods', 'APARINDS': 'Electrical Equipment'
+};
+
+// Extra business-context notes for symbols the AI providers have been observed getting confused
+// about — usually a recent corporate action their training data may predate or know thinly.
+// Injected into the prompt ONLY for a symbol that appears in a given batch, so this stays cheap
+// and doesn't bloat every other stock's context. TMPV/TMCV: Tata Motors' Nov 2025 demerger split
+// the company into passenger-vehicle+EV+JLR (TMPV) and commercial-vehicle (TMCV) halves — a model
+// unaware of this split has nothing real to reason from and is more likely to hallucinate.
+const SYMBOL_CONTEXT_HINTS = {
+  'TMPV': 'TMPV = Tata Motors Passenger Vehicles Ltd, the passenger-vehicle + EV + JLR half of the Nov 2025 Tata Motors demerger. Auto sector.',
+  'TMCV': 'TMCV = the commercial-vehicle half of the Nov 2025 Tata Motors demerger (now carrying the Tata Motors Limited name). Auto sector.'
+};
+
 function analyzeSymbols_(batch, data) {
   const ctx = batch.map((sym, i) => {
     const h = data.p1.find(x => x.sym === sym) || data.p2.find(x => x.sym === sym);
     const pr = data.prices[sym] || {};
     const netChg = (h && h.avg > 0 && pr.ltp) ? (((pr.ltp - h.avg) / h.avg) * 100).toFixed(1) : 'n/a';
-    return (i + 1) + ') SYMBOL=' + sym + ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
+    const hint = SYMBOL_CONTEXT_HINTS[sym] ? ' | NOTE: ' + SYMBOL_CONTEXT_HINTS[sym] : '';
+    return (i + 1) + ') SYMBOL=' + sym + hint + ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
       ' | LTP:' + (pr.ltp || 'n/a') + ' | vs cost:' + netChg + '%' +
       ' | day:' + (pr.dayChg != null ? Number(pr.dayChg).toFixed(1) + '%' : 'n/a');
   }).join('\n');
@@ -507,26 +564,36 @@ function analyzeSymbols_(batch, data) {
     'Below are ' + batch.length + ' completely INDEPENDENT NSE stocks, each numbered and on its own line. ' +
     'Treat each one as a separate, isolated analysis — do not let the sector, business, or news context of one ' +
     'stock bleed into your answer for another. Before writing each answer, re-read that stock\'s own SYMBOL and ' +
-    'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one.\n' +
+    'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one. ' +
+    'If a stock shows LTP:n/a, there is no reliable price data for it — say so plainly in the rationale rather ' +
+    'than inventing a confident-sounding call.\n' +
     'For EACH stock, give:\n' +
     '1. suggestion: exactly one of BUY, HOLD, SELL ON RALLY, EXIT NOW\n' +
     '2. rationale: ONE brief complete sentence (max 25 words) that conveys the full reasoning — sector trend, valuation, momentum, or business driver, SPECIFIC to that one company. No generic filler.\n' +
-    '3. alternate: ONLY for EXIT NOW / SELL ON RALLY. Must be an NSE symbol from the EXACT SAME sector/industry as this stock ' +
-    '(e.g. SYRMA for DIXON — both electronics manufacturing; INFY for TCS — both IT services). ' +
-    'If you cannot name a genuinely same-sector stock that is a clear improvement, output "" — an empty string is far better than a wrong-sector guess. ' +
-    'Never suggest a different-sector stock just to fill the field, and never reuse the same alternate symbol for two stocks in this batch that are not themselves in the same sector as each other.\n\n' +
+    '3. sector: this company\'s own sector — pick EXACTLY ONE label from this fixed list, copied exactly as written: ' + SECTOR_LIST.join(', ') + '\n' +
+    '4. alternate: ONLY for EXIT NOW / SELL ON RALLY. Must be a REAL NSE-listed company\'s exact ticker symbol, from ' +
+    'the EXACT SAME sector as this stock (e.g. SYRMA for DIXON — both EMS; INFY for TCS — both IT Services). ' +
+    'Only use a ticker you are genuinely confident is real and currently listed — never invent a plausible-sounding ' +
+    'name or generic term (e.g. "BLUECHIP" is not a company). If you cannot name a genuinely same-sector, real, ' +
+    'listed stock that is a clear improvement, output "" — an empty string is far better than a wrong or invented guess. ' +
+    'Never suggest a different-sector stock just to fill the field, and never reuse the same alternate symbol for two stocks in this batch that are not themselves in the same sector as each other.\n' +
+    '5. alt_sector: ONLY when alternate is non-empty — that alternate\'s own sector, from the SAME fixed list, and it MUST be identical to your "sector" answer above; else ""\n\n' +
     ctx + '\n\n' +
     'Respond ONLY with a JSON array, no markdown:\n' +
-    '[{"symbol":"SYM","suggestion":"...","rationale":"...","alternate":"..."}]';
+    '[{"symbol":"SYM","suggestion":"...","rationale":"...","sector":"...","alternate":"...","alt_sector":"..."}]';
 
   return aiChat_(prompt, 2200, parseAnalysisResponse_);
 }
 
-// Turns one provider's raw text into the {SYMBOL: {suggestion,rationale,alternate}} map.
-// Passed into aiChat_() as its parseResponse callback so a malformed/empty response is caught
+// Turns one provider's raw text into the {SYMBOL: {suggestion,rationale,sector,alternate,altSector}}
+// map. Passed into aiChat_() as its parseResponse callback so a malformed/empty response is caught
 // by the SAME per-slot try/catch that already handles HTTP/network failures — this slot is
 // skipped and rotation moves to the next one, instead of the parse error escaping the loop
 // and failing the whole batch.
+//
+// NOTE: sector/altSector are runtime-only validation signals (see DETERMINISTIC VALIDATION LAYER
+// below) — persistAI_() only ever reads .suggestion/.rationale/.alternate, so nothing here changes
+// the AI_Analysis sheet schema or the AI CALL/RATIONALE/ALT columns the UI already renders.
 function parseAnalysisResponse_(text) {
   const out = {};
   parseJsonArray_(text).forEach(o => {
@@ -534,11 +601,261 @@ function parseAnalysisResponse_(text) {
     out[String(o.symbol).toUpperCase()] = {
       suggestion: String(o.suggestion || 'HOLD').toUpperCase(),
       rationale:  String(o.rationale || ''),
-      alternate:  String(o.alternate || '')
+      sector:     String(o.sector || ''),
+      alternate:  String(o.alternate || ''),
+      altSector:  String(o.alt_sector || '')
     };
   });
   if (!Object.keys(out).length) throw new Error('Model returned unparseable output.');
   return out;
+}
+
+/* ====================== DETERMINISTIC VALIDATION LAYER ======================
+ * architect-prompt.txt Sections 4/6/7/9/11: the LLM proposes, this code decides what's
+ * actually safe to save. Runs once per stock (validateEntry_), right after the AI response
+ * is parsed and before anything is persisted. */
+
+const ALLOWED_CALLS = ['BUY', 'HOLD', 'SELL ON RALLY', 'EXIT NOW'];
+
+// Deliberately small, conservative phrase lists — only meant to catch UNAMBIGUOUS
+// contradictions matching Section 6's own examples, not to act as a real sentiment model.
+// Anything less clear-cut is left alone rather than risk a false-positive downgrade.
+const STRONG_POSITIVE_PHRASES = [
+  'strong fundamentals', 'attractive long-term', 'attractive valuation', 'robust growth',
+  'excellent prospects', 'buy the dip', 'compelling opportunity', 'best-in-class'
+];
+const STRONG_NEGATIVE_PHRASES = [
+  'severe balance-sheet', 'going concern', 'fraud', 'bankruptcy', 'insolvency',
+  'accounting irregularities', 'promoter pledge crisis', 'auditor resignation'
+];
+
+function isObviouslyContradictory_(suggestion, rationale) {
+  const r = String(rationale || '').toLowerCase();
+  const hasPositive = STRONG_POSITIVE_PHRASES.some(p => r.indexOf(p) > -1);
+  const hasNegative = STRONG_NEGATIVE_PHRASES.some(p => r.indexOf(p) > -1);
+  if ((suggestion === 'EXIT NOW' || suggestion === 'SELL ON RALLY') && hasPositive && !hasNegative) return true;
+  if (suggestion === 'BUY' && hasNegative && !hasPositive) return true;
+  return false;
+}
+
+function normalizeTicker_(t) {
+  return String(t || '').trim().toUpperCase().replace(/[^A-Z0-9&\-]/g, '');
+}
+function isPlausibleTicker_(t) {
+  return /^[A-Z0-9&\-]{2,20}$/.test(t);
+}
+function normalizeSector_(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+// Generic investment jargon the model can output in the ALT slot that LOOKS ticker-shaped
+// (passes isPlausibleTicker_) but is not a real company — e.g. "BLUECHIP" is a finance term,
+// not an NSE symbol. This does NOT catch a garbled-but-plausible real name (e.g. a misspelled
+// ticker) — that needs an actual ticker database, which isn't available here; known residual risk.
+const GENERIC_NONTICKER_TERMS = [
+  'BLUECHIP', 'LARGECAP', 'MIDCAP', 'SMALLCAP', 'GROWTH', 'VALUE', 'QUALITY',
+  'DIVIDEND', 'DEFENSIVE', 'CYCLICAL', 'MOMENTUM', 'SECTOR', 'INDEX', 'BENCHMARK'
+];
+
+// SECTOR_LIST has no ETF/fund/basket category, so an ETF could get labeled "Other" and falsely
+// pass the sector-match check against something unrelated. There is no single reliable NSE-wide
+// ETF ticker pattern: "BEES" suffix is safe (used broadly, e.g. GOLDBEES — no known real equity
+// is named that way), but prefix/substring guesses are NOT — this portfolio itself proves it:
+// a "UTI" prefix rule would wrongly flag UTIAMC (a real listed asset-management equity, not a
+// fund), and a "SOLAR" substring rule would wrongly flag SOLARINDS (a real explosives/defence
+// manufacturer, unrelated to solar energy or funds). So: pattern-match the safe suffix, and keep
+// an explicit, manually-verified list for everything else. UPDATE THIS LIST if a new ETF/fund
+// is added to P1/P2/Screener — a missed one silently falls back to the 'Other'-bucket gap.
+const KNOWN_ETF_SYMBOLS = ['GOLDBEES', 'MAFANG', 'UTIGOLD'];
+
+function isEtf_(sym) {
+  const s = normalizeTicker_(sym);
+  return /BEES$/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1;
+}
+
+// Observed phrasing keeps varying run to run ("LTP is not available", "price is not available",
+// "Unreliable price data" — none of which matched the original 3-phrase list), so this needs to
+// stay broad rather than an exact-phrase list. Low false-positive risk: this only fires when the
+// symbol already has a REAL positive LTP, so the worst case is an unnecessary-but-safe downgrade
+// to HOLD, never a dangerous one.
+const NO_DATA_CLAIM_PATTERNS = [
+  'no reliable price data', 'no live price data', 'no price data', 'no reliable data',
+  'unreliable price data', 'unreliable data', 'price is not available', 'ltp is not available',
+  'price data is not available', 'lack of reliable price', 'no clear market value'
+];
+
+// Section 26 (data integrity), tightly scoped as a validation rule. Two directions:
+//  - A stock with no live price has nothing real for the AI to reason about, and was observed
+//    hallucinating a different confident-sounding call/ALT each run for exactly such symbols.
+//  - The inverse also occurs: the AI sometimes claims "no reliable price data" in its rationale
+//    even when a real LTP exists (observed on BLS/GODFRYPHLP/IRCON) — a call built on a rationale
+//    that's factually wrong about a verifiable fact can't be trusted, so it's downgraded too.
+// Either way, this always overrides whatever the AI said — never left as the model's own output.
+function forceNoDataOverride_(sym, entry, prices) {
+  const pr = prices[sym];
+  const hasRealPrice = pr && pr.ltp > 0;
+  if (!hasRealPrice) {
+    entry.suggestion = 'HOLD';
+    entry.rationale = 'No live price data available for this symbol — AI analysis skipped pending a real quote.';
+    entry.alternate = '';
+    entry.altSector = '';
+  } else {
+    const r = String(entry.rationale || '').toLowerCase();
+    if (NO_DATA_CLAIM_PATTERNS.some(p => r.indexOf(p) > -1)) {
+      Logger.log('⚠ ' + sym + ': rationale falsely claims no price data (LTP=' + pr.ltp + ') — downgraded to HOLD');
+      entry.suggestion = 'HOLD';
+      entry.rationale = 'AI response was inconsistent with available price data (LTP ' + pr.ltp + ') — treated as HOLD pending re-analysis.';
+      entry.alternate = '';
+      entry.altSector = '';
+    }
+  }
+  return entry;
+}
+
+function validateEntry_(sym, entry) {
+  // 1) suggestion must be one of the 4 known values.
+  if (ALLOWED_CALLS.indexOf(entry.suggestion) === -1) {
+    Logger.log('⚠ ' + sym + ': unknown suggestion "' + entry.suggestion + '" — downgraded to HOLD');
+    entry.suggestion = 'HOLD';
+  }
+
+  // 2) ALT is only ever meaningful for EXIT NOW / SELL ON RALLY (Section 7, rule 1).
+  if (entry.suggestion !== 'EXIT NOW' && entry.suggestion !== 'SELL ON RALLY') {
+    entry.alternate = '';
+    entry.altSector = '';
+  }
+
+  // 3) Call ↔ rationale consistency (Section 6).
+  if (isObviouslyContradictory_(entry.suggestion, entry.rationale)) {
+    Logger.log('⚠ ' + sym + ': suggestion/rationale contradiction — downgraded to HOLD. Rationale: ' + entry.rationale);
+    entry.suggestion = 'HOLD';
+    entry.alternate = '';
+    entry.altSector = '';
+  }
+
+  // 4) ALT ticker sanity + self-reference + generic-jargon rejection (Section 11).
+  if (entry.alternate) {
+    const norm = normalizeTicker_(entry.alternate);
+    if (!norm || norm === sym || !isPlausibleTicker_(norm) || GENERIC_NONTICKER_TERMS.indexOf(norm) > -1) {
+      Logger.log('⚠ ' + sym + ': invalid/self-referencing/non-ticker ALT "' + entry.alternate + '" — blanked');
+      entry.alternate = '';
+      entry.altSector = '';
+    } else {
+      entry.alternate = norm;
+    }
+  }
+
+  // 5) Block ALT entirely for non-equity instruments (ETFs/funds/baskets) — "comparable
+  //    alternative" doesn't meaningfully apply when either side is one of these, and
+  //    SECTOR_LIST has no real category for them (see isEtf_() comment).
+  if (entry.alternate && (isEtf_(sym) || isEtf_(entry.alternate))) {
+    Logger.log('⚠ ' + sym + ': ETF/fund involved (this stock or its ALT) — blanked');
+    entry.alternate = '';
+    entry.altSector = '';
+  }
+
+  // 6) Sector comparability (Section 9). For EACH side independently, ground truth from
+  //    KNOWN_SECTOR_MAP wins if that symbol is listed; otherwise falls back to the AI's own
+  //    self-reported sector/alt_sector for that side. This is deliberately NOT "both sides must
+  //    be in the map" — a stock the AI systematically misidentifies (e.g. JWL self-reported as
+  //    "Jewellery" instead of Railways) will keep passing its OWN self-report against any new
+  //    hallucinated ALT that happens to share that same wrong label, no matter how many such
+  //    ALTs get individually added to the map. Comparing ground truth against whatever's
+  //    available for the other side closes that whack-a-mole gap without needing every bad ALT
+  //    pre-listed — confirmed against the JWL→PCJEWELLER case (PCJEWELLER was never in the map).
+  if (entry.alternate) {
+    const symSector = KNOWN_SECTOR_MAP[sym] || entry.sector;
+    const altSectorVal = KNOWN_SECTOR_MAP[entry.alternate] || entry.altSector;
+    if (!symSector || !altSectorVal || normalizeSector_(symSector) !== normalizeSector_(altSectorVal)) {
+      Logger.log('⚠ ' + sym + ': ALT ' + entry.alternate + ' sector mismatch (' + symSector + ' vs ' + altSectorVal + ') — blanked');
+      entry.alternate = '';
+      entry.altSector = '';
+    }
+  }
+
+  return entry;
+}
+
+// Simple cycle detection over a sym->alternate adjacency map. Returns the set of symbols that
+// are part of at least one cycle (A→B→A, A→B→C→A, etc). Runs a walk from every node, which is
+// enough to find every cycle in aggregate even though a walk starting outside a cycle won't
+// detect it — a walk starting from a member of that same cycle always will, and every cycle
+// member is itself iterated as a starting point.
+function findCycleMembers_(edges) {
+  const members = {};
+  Object.keys(edges).forEach(start => {
+    const seen = [];
+    const visited = {};
+    let cur = start;
+    while (edges[cur] && !visited[cur]) {
+      visited[cur] = true;
+      seen.push(cur);
+      cur = edges[cur];
+      if (cur === start) { seen.forEach(s => members[s] = 1); break; }
+    }
+  });
+  return Object.keys(members);
+}
+
+// architect-prompt.txt Sections 8 + 10: batch-level ALT consistency, checked against this
+// batch's results PLUS already-persisted AI_Analysis data (so an ALT pointing at a stock
+// analyzed in an earlier batch is still caught, not just ones within this same batch).
+function applyBatchAltConsistency_(batchResults, existingAi) {
+  const combined = {};
+  Object.keys(existingAi || {}).forEach(sym => { combined[sym] = existingAi[sym]; });
+  Object.keys(batchResults).forEach(sym => { combined[sym] = batchResults[sym]; }); // batch wins
+
+  // (a) Target's own latest call is itself EXIT NOW / SELL ON RALLY.
+  Object.keys(batchResults).forEach(sym => {
+    const e = batchResults[sym];
+    if (!e.alternate) return;
+    const target = combined[e.alternate];
+    if (target && (target.suggestion === 'EXIT NOW' || target.suggestion === 'SELL ON RALLY')) {
+      Logger.log('⚠ ' + sym + ': ALT ' + e.alternate + ' is itself ' + target.suggestion + ' — blanked');
+      e.alternate = ''; e.altSector = '';
+    }
+  });
+
+  // (b) Circular ALT chains — blank every symbol in any detected cycle.
+  const edges = {};
+  Object.keys(combined).forEach(sym => {
+    const e = combined[sym];
+    if (e && e.alternate) edges[sym] = e.alternate;
+  });
+  findCycleMembers_(edges).forEach(sym => {
+    if (batchResults[sym] && batchResults[sym].alternate) {
+      Logger.log('⚠ ' + sym + ': part of a circular ALT chain — blanked');
+      batchResults[sym].alternate = ''; batchResults[sym].altSector = '';
+    }
+  });
+
+  // (c) Same ALT reused across stocks from genuinely different sectors — generic-fallback signal
+  //     (Section 10). Per-stock sector-mismatch is already caught in validateEntry_(); this is a
+  //     defense-in-depth catch for cases where the model's own sector label for the same ALT
+  //     drifted across separate calls.
+  const usersByAlt = {};
+  Object.keys(combined).forEach(sym => {
+    const e = combined[sym];
+    if (e && e.alternate) {
+      (usersByAlt[e.alternate] = usersByAlt[e.alternate] || []).push({ sym: sym, sector: normalizeSector_(e.sector) });
+    }
+  });
+  Object.keys(usersByAlt).forEach(alt => {
+    const users = usersByAlt[alt];
+    if (users.length < 2) return;
+    const distinctSectors = {};
+    users.forEach(u => { if (u.sector) distinctSectors[u.sector] = 1; });
+    if (Object.keys(distinctSectors).length > 1) {
+      users.forEach(u => {
+        if (batchResults[u.sym] && batchResults[u.sym].alternate === alt) {
+          Logger.log('⚠ ' + u.sym + ': ALT ' + alt + ' reused across mismatched sectors — blanked');
+          batchResults[u.sym].alternate = ''; batchResults[u.sym].altSector = '';
+        }
+      });
+    }
+  });
+
+  return batchResults;
 }
 
 /* ====================== SLOT ROTATION ENGINE ====================== */
