@@ -534,7 +534,33 @@ const KNOWN_SECTOR_MAP = {
   // Confirmed AI company-identity confusion, not just a sector mismatch — e.g. ACE's rationale
   // literally described "Aarti Industries" (a different company entirely), and APARINDS's
   // rationale described a "cement business" it doesn't have. Ground truth here corrects that.
-  'ACE': 'Capital Goods', 'APARINDS': 'Electrical Equipment'
+  'ACE': 'Capital Goods', 'APARINDS': 'Electrical Equipment',
+  // JSL = Jindal Stainless (steel), but the AI self-labeled it "NBFC" and suggested SHRIRAMFIN
+  // (a real NBFC) as its ALT — same self-mislabel pattern JWL had with "Jewellery".
+  'JSL': 'Metals & Mining', 'SHRIRAMFIN': 'NBFC',
+  // Self-mislabels observed in the run of 2026-08-11 — each of these had a rationale describing
+  // the wrong industry entirely (BALKRISIND as "gold and silver jewelry", UNOMINDA as "IT
+  // Services", TITAN as "FMCG", PNGJL as "Metals & Mining", KPITTECH as "EMS", PIDILITIND as
+  // "Engineering", HEROMOTOCO as "Auto Components", OFSS as "ER&D").
+  'BALKRISIND': 'Auto Components', 'UNOMINDA': 'Auto Components',
+  'TITAN': 'Jewellery', 'PNGJL': 'Jewellery',
+  'KPITTECH': 'ER&D', 'PIDILITIND': 'Chemicals',
+  'HEROMOTOCO': 'Auto', 'OFSS': 'IT Services',
+  'ITCHOTELS': 'Hotels & Hospitality', 'BLACKROSE': 'Chemicals',
+  'ASTRAL': 'Building Materials', 'APLAPOLLO': 'Building Materials',
+  'COALINDIA': 'Metals & Mining', 'TRENT': 'Retail', 'BANDHANBNK': 'Banking',
+  // ALT-side counterparts, so the either-side comparison has ground truth on both ends.
+  'HINDALCO': 'Metals & Mining', 'HINDZINC': 'Metals & Mining',
+  'ASHOKLEY': 'Auto', 'EICHERMOT': 'Auto', 'TVSMOTOR': 'Auto', 'MARUTI': 'Auto',
+  'INDUSINDBK': 'Banking', 'KOTAKBANK': 'Banking', 'ICICIBANK': 'Banking', 'HDFCBANK': 'Banking',
+  'NTPC': 'Power', 'SJVN': 'Renewables', 'JSWENERGY': 'Power',
+  // LTM = LTM Ltd (Larsen & Toubro Infotech), NSE: LTM / BSE: 540005 — IT services. Confirmed
+  // from Screener.in. Earlier runs mislabeled it as a luxury/consumer brand ("Luxury demand
+  // strong"), though a later run did correctly identify the L&T connection.
+  'LTM': 'IT Services',
+  'LTIM': 'IT Services', 'LTI': 'IT Services', 'INFY': 'IT Services', 'TCS': 'IT Services',
+  'HINDUNILVR': 'FMCG', 'NESTLEIND': 'FMCG', 'TATACONSUM': 'FMCG',
+  'TATAELXSI': 'ER&D', 'SYRMA': 'EMS', 'DIXON': 'EMS'
 };
 
 // Extra business-context notes for symbols the AI providers have been observed getting confused
@@ -544,8 +570,16 @@ const KNOWN_SECTOR_MAP = {
 // the company into passenger-vehicle+EV+JLR (TMPV) and commercial-vehicle (TMCV) halves — a model
 // unaware of this split has nothing real to reason from and is more likely to hallucinate.
 const SYMBOL_CONTEXT_HINTS = {
-  'TMPV': 'TMPV = Tata Motors Passenger Vehicles Ltd, the passenger-vehicle + EV + JLR half of the Nov 2025 Tata Motors demerger. Auto sector.',
-  'TMCV': 'TMCV = the commercial-vehicle half of the Nov 2025 Tata Motors demerger (now carrying the Tata Motors Limited name). Auto sector.'
+  'TMPV': 'TMPV = Tata Motors Passenger Vehicles Ltd, the passenger-vehicle + EV + JLR half of the Nov 2025 Tata Motors demerger. Auto sector. The old combined TATAMOTORS listing no longer exists — do not reference or suggest it.',
+  'TMCV': 'TMCV = the commercial-vehicle half of the Nov 2025 Tata Motors demerger (now carrying the Tata Motors Limited name). Auto sector. The old combined TATAMOTORS listing no longer exists — do not reference or suggest it.',
+  // Identity-confusion cases observed in real runs: the model wrote rationales about a
+  // DIFFERENT company than the ticker (Aarti Industries for ACE; construction equipment for
+  // DIVISLAB; life insurance for ZYDUSLIFE; a cement business for APARINDS). ALT validation
+  // can't catch a wrong-company rationale on a BUY/HOLD call — this hint is the only lever.
+  'ACE': 'ACE = Action Construction Equipment Ltd — cranes and construction machinery (Capital Goods). NOT Aarti Industries or any chemicals company.',
+  'APARINDS': 'APARINDS = Apar Industries Ltd — conductors, cables and specialty oils (Electrical Equipment). NOT a cement company.',
+  'DIVISLAB': 'DIVISLAB = Divi\'s Laboratories Ltd — pharmaceutical APIs and custom synthesis (Pharma). NOT construction equipment.',
+  'ZYDUSLIFE': 'ZYDUSLIFE = Zydus Lifesciences Ltd — pharmaceuticals (Pharma). NOT a life-insurance company despite the name.'
 };
 
 function analyzeSymbols_(batch, data) {
@@ -553,8 +587,14 @@ function analyzeSymbols_(batch, data) {
     const h = data.p1.find(x => x.sym === sym) || data.p2.find(x => x.sym === sym);
     const pr = data.prices[sym] || {};
     const netChg = (h && h.avg > 0 && pr.ltp) ? (((pr.ltp - h.avg) / h.avg) * 100).toFixed(1) : 'n/a';
+    // Feed KNOWN_SECTOR_MAP ground truth INTO the prompt, not just use it as a post-check.
+    // Post-validation can only blank a bad ALT; it can't fix a rationale written about the wrong
+    // business (observed: PGHH correctly ALT-blanked but still described as "Jewellery sector").
+    // Telling the model the sector upfront is the only lever that reaches rationale quality.
+    const known = KNOWN_SECTOR_MAP[sym];
+    const sectorNote = known ? ' | SECTOR (authoritative — use this, do not infer your own): ' + known : '';
     const hint = SYMBOL_CONTEXT_HINTS[sym] ? ' | NOTE: ' + SYMBOL_CONTEXT_HINTS[sym] : '';
-    return (i + 1) + ') SYMBOL=' + sym + hint + ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
+    return (i + 1) + ') SYMBOL=' + sym + sectorNote + hint + ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
       ' | LTP:' + (pr.ltp || 'n/a') + ' | vs cost:' + netChg + '%' +
       ' | day:' + (pr.dayChg != null ? Number(pr.dayChg).toFixed(1) + '%' : 'n/a');
   }).join('\n');
@@ -657,6 +697,26 @@ const GENERIC_NONTICKER_TERMS = [
   'DIVIDEND', 'DEFENSIVE', 'CYCLICAL', 'MOMENTUM', 'SECTOR', 'INDEX', 'BENCHMARK'
 ];
 
+// Tickers that were real once but no longer trade under that symbol — the models' training data
+// predates the corporate action, so they keep suggesting them. TATAMOTORS: replaced by the
+// TMPV/TMCV pair in the Nov 2025 demerger (observed suggested as ALT for TMPV, MARUTI, HYUNDAI,
+// BAJAJ-AUTO across runs). Add here when a listing is renamed/merged/delisted.
+const KNOWN_STALE_TICKERS = ['TATAMOTORS'];
+
+// Observed hallucinated or misspelled ALT symbols — each is a near-miss of a real company, so
+// isPlausibleTicker_() passes them on format and only explicit knowledge catches them. Listing
+// the WRONG form here (the right form, where one exists, is noted alongside) — this is not a
+// general solution to invented tickers (that needs a real NSE symbol database), just a block on
+// the specific bad values this system has actually produced.
+const KNOWN_INVALID_TICKERS = [
+  'PIRAMLABS',    // no such NSE symbol (Piramal entities are PEL / PPLPHARMA)
+  'INDUSLANDBK',  // misspelling of INDUSINDBK
+  'AJANTPHD',     // Ajanta Pharma is AJANTPHARM
+  'BALKRISHNA',   // Balkrishna Industries is BALKRISIND
+  'MOTHSON',      // Samvardhana Motherson is MOTHERSON
+  'BLUEDEXT'      // unidentifiable; appeared as KWIL's ALT in an earlier run
+];
+
 // SECTOR_LIST has no ETF/fund/basket category, so an ETF could get labeled "Other" and falsely
 // pass the sector-match check against something unrelated. There is no single reliable NSE-wide
 // ETF ticker pattern: "BEES" suffix is safe (used broadly, e.g. GOLDBEES — no known real equity
@@ -702,7 +762,10 @@ function forceNoDataOverride_(sym, entry, prices) {
   } else {
     const r = String(entry.rationale || '').toLowerCase();
     if (NO_DATA_CLAIM_PATTERNS.some(p => r.indexOf(p) > -1)) {
-      Logger.log('⚠ ' + sym + ': rationale falsely claims no price data (LTP=' + pr.ltp + ') — downgraded to HOLD');
+      // Log the ORIGINAL rationale before replacing it — the sheet only keeps the replacement,
+      // so this log line is the only surviving evidence for auditing whether the pattern match
+      // was a genuine false no-data claim or an over-broad match. Check the Executions panel.
+      Logger.log('⚠ ' + sym + ': rationale falsely claims no price data (LTP=' + pr.ltp + ') — downgraded to HOLD. Original rationale was: "' + entry.rationale + '"');
       entry.suggestion = 'HOLD';
       entry.rationale = 'AI response was inconsistent with available price data (LTP ' + pr.ltp + ') — treated as HOLD pending re-analysis.';
       entry.alternate = '';
@@ -733,11 +796,13 @@ function validateEntry_(sym, entry) {
     entry.altSector = '';
   }
 
-  // 4) ALT ticker sanity + self-reference + generic-jargon rejection (Section 11).
+  // 4) ALT ticker sanity + self-reference + generic-jargon + stale-listing rejection (Section 11).
   if (entry.alternate) {
     const norm = normalizeTicker_(entry.alternate);
-    if (!norm || norm === sym || !isPlausibleTicker_(norm) || GENERIC_NONTICKER_TERMS.indexOf(norm) > -1) {
-      Logger.log('⚠ ' + sym + ': invalid/self-referencing/non-ticker ALT "' + entry.alternate + '" — blanked');
+    if (!norm || norm === sym || !isPlausibleTicker_(norm) ||
+        GENERIC_NONTICKER_TERMS.indexOf(norm) > -1 || KNOWN_STALE_TICKERS.indexOf(norm) > -1 ||
+        KNOWN_INVALID_TICKERS.indexOf(norm) > -1) {
+      Logger.log('⚠ ' + sym + ': invalid/self-referencing/non-ticker/stale ALT "' + entry.alternate + '" — blanked');
       entry.alternate = '';
       entry.altSector = '';
     } else {
