@@ -20,6 +20,10 @@ const TAB_SCREENER = 'Screener';
 const TAB_PRICES   = 'LivePrices';
 const TAB_AI       = 'AI_Analysis';
 const TAB_INDICES  = 'Indices';
+// Scratch tab used only to probe whether a proposed ALT ticker actually exists (see
+// verifyAltTickersExist_). Created hidden on first use; safe to delete — it is rebuilt on demand
+// and holds no durable data.
+const TAB_TICKER_CHECK = 'TickerCheck';
 
 // Ticker syntax confirmed via GOOGLEFINANCE docs/community examples for Indian indices.
 const INDEX_LIST = [
@@ -441,6 +445,11 @@ function processAIBatch(precomputedPend) {
         forceNoDataOverride_(sym, rawResults[sym], pend.data.prices);
         validateEntry_(sym, rawResults[sym]);
       });
+      // Existence-check surviving ALTs before the cross-stock pass, so batch consistency only
+      // ever reasons about symbols that actually trade.
+      const universe = {};
+      uniqueSymbols_(pend.data).forEach(s => universe[s] = 1);
+      verifyAltTickersExist_(rawResults, universe);
       const results = applyBatchAltConsistency_(rawResults, pend.data.ai);
       persistAI_(results);
       const done = pend.total - pend.symbols.length + Object.keys(results).length;
@@ -894,6 +903,94 @@ function validateEntry_(sym, entry) {
   }
 
   return entry;
+}
+
+/* ---------- ALT ticker existence check via GOOGLEFINANCE ----------
+ * KNOWN_INVALID_TICKERS can only block values already observed, but every run has produced
+ * brand-new invented symbols (KIRLOSKER, MAHINDRASUB, SAMBAREY, LAKSHMI in the latest one).
+ * Asking GOOGLEFINANCE for a price is a real existence test that catches symbols nobody has
+ * seen before, instead of playing whack-a-mole with a blocklist. */
+
+// Real-time "price" lookups settle far faster than the historical ATH scan in refreshLivePrices(),
+// but still need a flush + pause before the values can be read back.
+const ALT_CHECK_WAIT_MS = 6000;
+// A symbol that resolved once is very unlikely to stop existing, so positives are cached long.
+// Negatives expire quickly so a transient GOOGLEFINANCE failure can't permanently blacklist a
+// real symbol.
+const ALT_CACHE_OK_MS  = 30 * 24 * 3600 * 1000;
+const ALT_CACHE_BAD_MS =      24 * 3600 * 1000;
+
+function altCacheGet_(sym) {
+  const raw = props_().getProperty('ALTCHK_' + sym);
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw);
+    const ttl = o.ok ? ALT_CACHE_OK_MS : ALT_CACHE_BAD_MS;
+    return (Date.now() - o.ts > ttl) ? null : o.ok;
+  } catch (e) {
+    return null;
+  }
+}
+function altCacheSet_(sym, ok) {
+  props_().setProperty('ALTCHK_' + sym, JSON.stringify({ ok: ok, ts: Date.now() }));
+}
+
+// knownUniverse: map of symbols already known real (the user's own P1/P2/Screener holdings).
+// Those plus anything in KNOWN_SECTOR_MAP are trusted without a lookup, and cached answers are
+// reused, so a warmed-up batch typically performs zero actual probes.
+function verifyAltTickersExist_(results, knownUniverse) {
+  const need = {};
+  Object.keys(results).forEach(sym => {
+    const alt = results[sym].alternate;
+    if (!alt) return;
+    if (KNOWN_SECTOR_MAP[alt] || knownUniverse[alt]) return;   // already trusted
+    const cached = altCacheGet_(alt);
+    if (cached === true) return;
+    if (cached === false) {
+      Logger.log('⚠ ' + sym + ': ALT ' + alt + ' failed a prior existence check (cached) — blanked');
+      results[sym].alternate = ''; results[sym].altSector = '';
+      return;
+    }
+    need[alt] = 1;
+  });
+
+  const list = Object.keys(need);
+  if (!list.length) return results;   // nothing unknown — skip the sheet write and the wait
+
+  let sh = ss().getSheetByName(TAB_TICKER_CHECK);
+  if (!sh) { sh = ss().insertSheet(TAB_TICKER_CHECK); sh.hideSheet(); }
+  sh.clearContents();
+  sh.getRange(1, 1, 1, 2).setValues([['Ticker', 'Price']]);
+  sh.getRange(2, 1, list.length, 2).setValues(list.map(t => [
+    t,
+    '=IFERROR(GOOGLEFINANCE("NSE:' + t + '","price"), IFERROR(GOOGLEFINANCE("BOM:' + t + '","price"), 0))'
+  ]));
+  SpreadsheetApp.flush();
+  Utilities.sleep(ALT_CHECK_WAIT_MS);
+  const vals = sh.getRange(2, 1, list.length, 2).getValues();
+
+  const ok = {};
+  vals.forEach(r => { ok[String(r[0])] = Number(r[1]) > 0; });
+
+  // Sanity guard: if NOT ONE probe in this batch resolved, that is far more likely a transient
+  // GOOGLEFINANCE hiccup than several simultaneously-invented symbols. Still blank for this run
+  // (the spec prefers a blank ALT over a wrong one), but do NOT cache those negatives — otherwise
+  // one bad minute would suppress perfectly valid alternatives for a full day.
+  const anyResolved = Object.keys(ok).some(t => ok[t]);
+  Object.keys(ok).forEach(t => {
+    if (ok[t] || anyResolved) altCacheSet_(t, ok[t]);
+    Logger.log((ok[t] ? '✓' : '⚠') + ' ticker existence check for "' + t + '": ' +
+      (ok[t] ? 'quoted, accepted' : 'NO NSE/BSE quote — blanking' + (anyResolved ? '' : ' (not cached: whole batch failed, treating as transient)')));
+  });
+
+  Object.keys(results).forEach(sym => {
+    const alt = results[sym].alternate;
+    if (alt && ok[alt] === false) {
+      Logger.log('⚠ ' + sym + ': ALT ' + alt + ' is not a quoted NSE/BSE symbol — blanked');
+      results[sym].alternate = ''; results[sym].altSector = '';
+    }
+  });
+  return results;
 }
 
 // Simple cycle detection over a sym->alternate adjacency map. Returns the set of symbols that

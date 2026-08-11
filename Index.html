@@ -72,6 +72,7 @@
   .chip-stop{background:var(--red);color:#fff;border-color:var(--red)}
   .chip-export{margin-left:auto;border:1.5px solid var(--navy);color:var(--navy)}
   .status-msg{font-size:11px;color:var(--amber);font-weight:600}
+  .filternote{font-size:11px;color:#7183a1;font-weight:600;margin-left:4px;align-self:center}
   .sortnote{font-size:11px;color:#7183a1;margin:4px 2px 8px}
   .sortnote a{color:var(--blue);cursor:pointer}
 
@@ -293,7 +294,15 @@ if (!IS_APPS_SCRIPT) {
 let DATA = { p1:[], p2:[], screener:[], prices:{}, ai:{}, watchlist:[], indices:{} };
 let ROWS = [];
 let sortKey = 'dayChg', sortDir = 1;
-let filter = 'ALL';
+/* Multi-select filters. Chips belong to groups; within a group the selections are OR'd, and
+ * across groups they are AND'd — so {EXIT,BUY} + {P1} means "exit-now OR buy, but only in P1".
+ * An empty selection means no filtering (the "All" chip). */
+let activeFilters = {};
+const FILTER_GROUPS = {
+  EXIT:'call', RALLY:'call', BUY:'call', HOLD:'call', PENDING:'call',
+  P1:'port', P2:'port', NOTHELD:'port',
+  WATCH:'watch'
+};
 let pollTimer = null;
 
 const COLS = [
@@ -445,21 +454,29 @@ function badge(sug){
   return '<span class="badge '+(map[sug]||'b-hold')+'">'+(short[sug]||sug)+'</span>';
 }
 
+function matchChip(key, r){
+  switch(key){
+    case 'EXIT':    return r.sug==='EXIT NOW';
+    case 'RALLY':   return r.sug==='SELL ON RALLY';
+    case 'BUY':     return r.sug==='BUY';
+    case 'HOLD':    return r.sug==='HOLD';
+    case 'PENDING': return !r.sug;
+    case 'P1':      return r.port==='P1';
+    case 'P2':      return r.port==='P2';
+    case 'NOTHELD': return !r.port;
+    case 'WATCH':   return DATA.watchlist.indexOf(r.sym)>-1;
+  }
+  return true;
+}
+
 function filteredRows(){
-  return ROWS.filter(r=>{
-    switch(filter){
-      case 'ALL': return true;
-      case 'EXIT': return r.sug==='EXIT NOW';
-      case 'RALLY': return r.sug==='SELL ON RALLY';
-      case 'BUY': return r.sug==='BUY';
-      case 'HOLD': return r.sug==='HOLD';
-      case 'PENDING': return !r.sug;
-      case 'P1': return r.port==='P1';
-      case 'P2': return r.port==='P2';
-      case 'NOTHELD': return !r.port;
-      case 'WATCH': return DATA.watchlist.indexOf(r.sym)>-1;
-    }
-  });
+  const sel = Object.keys(activeFilters);
+  if (!sel.length) return ROWS;            // nothing selected == "All"
+  const byGroup = {};
+  sel.forEach(k=>{ const g=FILTER_GROUPS[k]; (byGroup[g]=byGroup[g]||[]).push(k); });
+  // AND across groups, OR within each group
+  return ROWS.filter(r =>
+    Object.keys(byGroup).every(g => byGroup[g].some(k => matchChip(k, r))));
 }
 
 function renderFilters(){
@@ -480,11 +497,25 @@ function renderFilters(){
     ['HOLD','Hold'],['PENDING','Pending'],['P1','P1'],['P2','P2'],
     ['NOTHELD','Not held'],['WATCH','Watchlist']
   ];
-  document.getElementById('filterBar').innerHTML = defs.map(d =>
-    '<button class="chip '+(filter===d[0]?'active':'')+'" onclick="setFilter(\''+d[0]+'\')">'
-    + d[1] + ' (' + counts[d[0]] + ')</button>').join('');
+  const anySelected = Object.keys(activeFilters).length > 0;
+  const chips = defs.map(d => {
+    // "All" lights up only when nothing else is selected; it acts as the clear-all control.
+    const on = (d[0]==='ALL') ? !anySelected : !!activeFilters[d[0]];
+    return '<button class="chip '+(on?'active':'')+'" onclick="setFilter(\''+d[0]+'\')">'
+      + d[1] + ' (' + counts[d[0]] + ')</button>';
+  }).join('');
+  // With combined filters the visible row count is not obvious from any single chip, so show it.
+  const shown = anySelected
+    ? '<span class="filternote">Showing ' + filteredRows().length + ' of ' + ROWS.length + '</span>'
+    : '';
+  document.getElementById('filterBar').innerHTML = chips + shown;
 }
-function setFilter(f){ filter=f; renderFilters(); renderTable(); }
+function setFilter(f){
+  if (f==='ALL') activeFilters = {};                                   // clear all
+  else if (activeFilters[f]) delete activeFilters[f];                  // toggle off
+  else activeFilters[f] = true;                                        // toggle on
+  renderFilters(); renderTable();
+}
 
 function sortBy(k){
   if (sortKey===k) sortDir*=-1; else { sortKey=k; sortDir=1; }
