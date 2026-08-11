@@ -504,7 +504,7 @@ function clearAIResults() {
 // sector-comparability checkable by plain string equality in validateEntry_() below, with no
 // fuzzy matching or extra AI round-trip needed.
 const SECTOR_LIST = [
-  'IT Services','ER&D','Auto','Auto Components','Banking','NBFC','Insurance','Pharma',
+  'IT Services','ER&D','Auto','Auto Components','Banking','NBFC','Asset Management','Insurance','Pharma',
   'Healthcare Services','FMCG','Tobacco','Consumer Durables','Retail','Jewellery','Paints','Chemicals',
   'Agrochemicals','Cement','Building Materials','Metals & Mining','Power','Electrical Equipment',
   'Capital Goods','Defence','Railways','EMS','Semiconductor','Telecom Equipment','Telecom Services',
@@ -530,7 +530,8 @@ const KNOWN_SECTOR_MAP = {
   'TMPV': 'Auto', 'TMCV': 'Auto',
   'RAINBOW': 'Healthcare Services',
   'KALAMANDIR': 'Retail', 'GRASIM': 'Diversified Conglomerate',
-  'TATATECH': 'ER&D', 'MOTHSON': 'Auto Components', 'MOTHERSON': 'Auto Components',
+  // 'MOTHSON' is NOT listed here — it is a misspelling and lives in KNOWN_INVALID_TICKERS.
+  'TATATECH': 'ER&D', 'MOTHERSON': 'Auto Components',
   // Confirmed AI company-identity confusion, not just a sector mismatch — e.g. ACE's rationale
   // literally described "Aarti Industries" (a different company entirely), and APARINDS's
   // rationale described a "cement business" it doesn't have. Ground truth here corrects that.
@@ -558,9 +559,37 @@ const KNOWN_SECTOR_MAP = {
   // from Screener.in. Earlier runs mislabeled it as a luxury/consumer brand ("Luxury demand
   // strong"), though a later run did correctly identify the L&T connection.
   'LTM': 'IT Services',
-  'LTIM': 'IT Services', 'LTI': 'IT Services', 'INFY': 'IT Services', 'TCS': 'IT Services',
+  // NOTE: 'LTI' and 'LTIM' deliberately NOT listed here — both are superseded symbols for the
+  // company that now trades as LTM (see KNOWN_STALE_TICKERS). LTM itself is mapped further up.
+  'INFY': 'IT Services', 'TCS': 'IT Services',
   'HINDUNILVR': 'FMCG', 'NESTLEIND': 'FMCG', 'TATACONSUM': 'FMCG',
-  'TATAELXSI': 'ER&D', 'SYRMA': 'EMS', 'DIXON': 'EMS'
+  'TATAELXSI': 'ER&D', 'SYRMA': 'EMS', 'DIXON': 'EMS',
+  // --- Verified against Screener.in company pages (2026-08-11) ---
+  'SOLARINDS': 'Chemicals',                     // Solar Industries India — bulk/cartridge explosives, detonators (72% industrial explosives FY25). NOT solar energy.
+  'KWIL': 'FMCG',                               // Kwality Wall's India — ice cream & frozen desserts (Magnum, Cornetto)
+  'OLECTRA': 'Auto',                            // Olectra Greentech — E-Vehicle division is 91% of revenue (electric buses)
+  'IEX': 'Financial Market Infrastructure',     // Indian Energy Exchange — electricity trading exchange, ~85% market share
+  'TRITURBINE': 'Capital Goods',                // Triveni Turbine — power generating equipment. NOT "Triton Engineering".
+  'GVT&D': 'Electrical Equipment',              // GE Vernova T&D India — power transmission & distribution equipment
+  'WAAREERTL': 'Renewables',                    // Waaree Renewable Technologies — renewable power generation / solar EPC
+  'HDFCAMC': 'Asset Management',                // HDFC Asset Management — fund management services. NOT an NBFC.
+  'CUMMINSIND': 'Capital Goods',                // Cummins India — diesel/alternative-fuel engines, gensets
+  'BLS': 'Other',                               // BLS International — visa & consular services outsourcing (61% of FY26 revenue)
+  'SCHAEFFLER': 'Auto Components',              // Schaeffler India — roller/ball bearings, engine systems, transmission components
+  'BOSCHLTD': 'Auto Components',                // Bosch Ltd — mobility solutions/powertrain primary; also industrial & building tech
+  'ATHERENERG': 'Auto',                         // Ather Energy — electric two-wheeler (E2W) manufacturer
+  'HBLENGINE': 'Electrical Equipment',          // HBL Engineering (formerly HBL Power Systems) — industrial batteries are 71% of FY25 revenue
+  // Correct current symbols for companies the model kept naming with dead/wrong tickers.
+  'KPIL': 'Capital Goods',                      // Kalpataru Projects International — turnkey EPC (power T&D, railways, oil & gas, infra)
+  'CHALET': 'Hotels & Hospitality',             // Chalet Hotels — the real symbol behind the model's "CHALETHOTELS"
+  'KIRLOSIND': 'Diversified Conglomerate',      // Kirloskar Industries — wind power generation (5.6 MW), securities/property investments, real estate leasing. A holding company, NOT an electrical-equipment maker.
+  'DIVISLAB': 'Pharma', 'ZYDUSLIFE': 'Pharma',  // both have context hints; map entries make their sector authoritative too
+  // --- Added from my own knowledge, NOT screenshot-verified — challenge any of these ---
+  'VBL': 'Beverages',
+  'MCX': 'Financial Market Infrastructure', 'BSE': 'Financial Market Infrastructure',
+  'CDSL': 'Financial Market Infrastructure', 'TITAGARH': 'Railways', 'IRCON': 'Railways',
+  'RVNL': 'Railways', 'SWIGGY': 'Internet & E-commerce', 'HAL': 'Defence', 'BEL': 'Defence',
+  'CHENNPETRO': 'Oil & Gas', 'RELIANCE': 'Oil & Gas', 'ONGC': 'Oil & Gas'
 };
 
 // Extra business-context notes for symbols the AI providers have been observed getting confused
@@ -579,7 +608,20 @@ const SYMBOL_CONTEXT_HINTS = {
   'ACE': 'ACE = Action Construction Equipment Ltd — cranes and construction machinery (Capital Goods). NOT Aarti Industries or any chemicals company.',
   'APARINDS': 'APARINDS = Apar Industries Ltd — conductors, cables and specialty oils (Electrical Equipment). NOT a cement company.',
   'DIVISLAB': 'DIVISLAB = Divi\'s Laboratories Ltd — pharmaceutical APIs and custom synthesis (Pharma). NOT construction equipment.',
-  'ZYDUSLIFE': 'ZYDUSLIFE = Zydus Lifesciences Ltd — pharmaceuticals (Pharma). NOT a life-insurance company despite the name.'
+  'ZYDUSLIFE': 'ZYDUSLIFE = Zydus Lifesciences Ltd — pharmaceuticals (Pharma). NOT a life-insurance company despite the name.',
+  // Verified against Screener.in (2026-08-11). Each of these has a name that misleads the model
+  // into describing a completely different business — the exact ZYDUSLIFE failure mode.
+  'SOLARINDS': 'SOLARINDS = Solar Industries India Ltd — bulk and cartridge EXPLOSIVES, detonators and detonating cords, plus a growing defence segment. NOT solar energy or renewables despite the name.',
+  'APLAPOLLO': 'APLAPOLLO = APL Apollo Tubes Ltd — branded structural steel tubes for construction. NOT "Apollo Pipes" and NOT Apollo Hospitals — those are different listed companies.',
+  'TRITURBINE': 'TRITURBINE = Triveni Turbine Ltd — manufactures industrial steam turbines and power generating equipment. NOT "Triton Engineering".',
+  'KWIL': 'KWIL = Kwality Wall\'s (India) Ltd — ice cream and frozen desserts (Kwality Wall\'s, Magnum, Cornetto brands). A consumer foods company.',
+  'OLECTRA': 'OLECTRA = Olectra Greentech Ltd — electric buses are ~91% of revenue (plus composite polymer insulators). An automotive manufacturer, NOT a renewable-energy generator.',
+  'IEX': 'IEX = Indian Energy Exchange Ltd — the electricity trading exchange platform (~85% market share). Exchange infrastructure, NOT an IT services company or a power generator.',
+  'BLS': 'BLS = BLS International Services Ltd — visa and consular services outsourcing (~61% of revenue). NOT a logistics company.',
+  'HDFCAMC': 'HDFCAMC = HDFC Asset Management Company Ltd — mutual fund management services. An asset manager, NOT an NBFC or a bank.',
+  'GVT&D': 'GVT&D = GE Vernova T&D India Ltd — power transmission and distribution equipment (GE\'s Grid Solutions business in India).',
+  'WAAREERTL': 'WAAREERTL = Waaree Renewable Technologies Ltd — renewable power generation and solar EPC. Part of the Waaree Group.',
+  'CUMMINSIND': 'CUMMINSIND = Cummins India Ltd — diesel and alternative-fuel engines, gensets and powergen equipment.'
 };
 
 function analyzeSymbols_(batch, data) {
@@ -701,7 +743,16 @@ const GENERIC_NONTICKER_TERMS = [
 // predates the corporate action, so they keep suggesting them. TATAMOTORS: replaced by the
 // TMPV/TMCV pair in the Nov 2025 demerger (observed suggested as ALT for TMPV, MARUTI, HYUNDAI,
 // BAJAJ-AUTO across runs). Add here when a listing is renamed/merged/delisted.
-const KNOWN_STALE_TICKERS = ['TATAMOTORS'];
+const KNOWN_STALE_TICKERS = [
+  'TATAMOTORS',   // split into TMPV / TMCV in the Nov 2025 demerger
+  'KALPATPOWR',   // Kalpataru Power Transmission renamed to Kalpataru Projects International — now KPIL
+  'LTI',          // L&T Infotech merged into LTIMindtree — the LTI symbol no longer trades
+  // LTIMindtree now trades as LTM (NSE: LTM, BSE: 540005 — confirmed on Ticker/Finology and
+  // Google Finance, both showing "LTM Ltd" with the LTIMindtree business description at the
+  // same BSE code). If LTIM turns out to still trade, remove this line and re-add
+  // 'LTIM': 'IT Services' to KNOWN_SECTOR_MAP.
+  'LTIM'
+];
 
 // Observed hallucinated or misspelled ALT symbols — each is a near-miss of a real company, so
 // isPlausibleTicker_() passes them on format and only explicit knowledge catches them. Listing
@@ -714,7 +765,11 @@ const KNOWN_INVALID_TICKERS = [
   'AJANTPHD',     // Ajanta Pharma is AJANTPHARM
   'BALKRISHNA',   // Balkrishna Industries is BALKRISIND
   'MOTHSON',      // Samvardhana Motherson is MOTHERSON
-  'BLUEDEXT'      // unidentifiable; appeared as KWIL's ALT in an earlier run
+  'BLUEDEXT',     // unidentifiable; appeared as KWIL's ALT in an earlier run
+  // Verified 2026-08-11: not listed on NSE/BSE at all
+  'RENEWPOWER',   // ReNew's listed parent is ReNew Energy Global on NASDAQ (RNW) — no Indian listing
+  'SUNDARMOT',    // no such symbol; nearest real ones are SHARDAMOTR / SUNDRMFAST
+  'CHALETHOTELS'  // company is real but its NSE symbol is CHALET (see KNOWN_SECTOR_MAP)
 ];
 
 // SECTOR_LIST has no ETF/fund/basket category, so an ETF could get labeled "Other" and falsely
