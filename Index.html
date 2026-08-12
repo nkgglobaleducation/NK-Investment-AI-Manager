@@ -301,6 +301,7 @@ let activeFilters = {};
 const FILTER_GROUPS = {
   EXIT:'call', RALLY:'call', BUY:'call', HOLD:'call', PENDING:'call',
   P1:'port', P2:'port', NOTHELD:'port',
+  SCRN:'scrn',   // own group, so it AND's with the others (Screener + Buy = buy-rated screener stocks)
   WATCH:'watch'
 };
 let pollTimer = null;
@@ -464,6 +465,7 @@ function matchChip(key, r){
     case 'P1':      return r.port==='P1';
     case 'P2':      return r.port==='P2';
     case 'NOTHELD': return !r.port;
+    case 'SCRN':    return !!r.scr;
     case 'WATCH':   return DATA.watchlist.indexOf(r.sym)>-1;
   }
   return true;
@@ -490,12 +492,13 @@ function renderFilters(){
     P1: ROWS.filter(r=>r.port==='P1').length,
     P2: ROWS.filter(r=>r.port==='P2').length,
     NOTHELD: ROWS.filter(r=>!r.port).length,
+    SCRN: ROWS.filter(r=>r.scr).length,
     WATCH: DATA.watchlist.length
   };
   const defs = [
     ['ALL','All'],['EXIT','Exit now'],['RALLY','Sell on rally'],['BUY','Buy'],
     ['HOLD','Hold'],['PENDING','Pending'],['P1','P1'],['P2','P2'],
-    ['NOTHELD','Not held'],['WATCH','Watchlist']
+    ['NOTHELD','Not held'],['SCRN','Screener'],['WATCH','Watchlist']
   ];
   const anySelected = Object.keys(activeFilters).length > 0;
   const chips = defs.map(d => {

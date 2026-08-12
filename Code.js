@@ -441,6 +441,11 @@ function processAIBatch(precomputedPend) {
       const rawResults = analyzeSymbols_(batch, pend.data);
       // DATA → AI ANALYSIS → STRUCTURED AI RESPONSE → DETERMINISTIC VALIDATION → SAVE
       // (architect-prompt.txt Section 4). Never persist a raw AI response as-is.
+      // Record which stocks originally proposed an ALT, so the tidy pass below can tell whether a
+      // rationale's reference to an alternative was left dangling by validation.
+      const proposedAlt = {};
+      Object.keys(rawResults).forEach(s => { proposedAlt[s] = !!rawResults[s].alternate; });
+
       Object.keys(rawResults).forEach(sym => {
         forceNoDataOverride_(sym, rawResults[sym], pend.data.prices);
         validateEntry_(sym, rawResults[sym]);
@@ -451,6 +456,12 @@ function processAIBatch(precomputedPend) {
       uniqueSymbols_(pend.data).forEach(s => universe[s] = 1);
       verifyAltTickersExist_(rawResults, universe);
       const results = applyBatchAltConsistency_(rawResults, pend.data.ai);
+
+      // Rationale quality (Section 15), then clean up any sentence left dangling by a removed ALT.
+      regenerateWeakRationales_(findWeakRationales_(results, pend.data.ai), results);
+      Object.keys(results).forEach(s => {
+        results[s].rationale = tidyRationale_(results[s].rationale, proposedAlt[s] && !results[s].alternate);
+      });
       persistAI_(results);
       const done = pend.total - pend.symbols.length + Object.keys(results).length;
       setStatus_({ running:true, done:done, total:pend.total,
@@ -593,6 +604,14 @@ const KNOWN_SECTOR_MAP = {
   'CHALET': 'Hotels & Hospitality',             // Chalet Hotels — the real symbol behind the model's "CHALETHOTELS"
   'KIRLOSIND': 'Diversified Conglomerate',      // Kirloskar Industries — wind power generation (5.6 MW), securities/property investments, real estate leasing. A holding company, NOT an electrical-equipment maker.
   'DIVISLAB': 'Pharma', 'ZYDUSLIFE': 'Pharma',  // both have context hints; map entries make their sector authoritative too
+  // Gaps found in the run of 2026-08-11: these had no map entry, so the model's own (wrong)
+  // sector label went unchallenged and let a cross-sector ALT through.
+  'CGPOWER': 'Electrical Equipment',            // CG Power & Industrial Solutions — was paired with NTPC (Power)
+  'JKIL': 'Capital Goods',                      // J Kumar Infraprojects — construction EPC; was offered as an ALT for APLAPOLLO (Building Materials)
+  // Real tickers the GOOGLEFINANCE probe accepted this run. Mapping them means the sector check
+  // judges the pair on ground truth instead of the model's self-report.
+  'CROMPTON': 'Electrical Equipment',           // Crompton Greaves Consumer Electricals — peer of HAVELLS
+  'NHPC': 'Power', 'NMDC': 'Metals & Mining', 'AIAENG': 'Capital Goods',
   // --- Added from my own knowledge, NOT screenshot-verified — challenge any of these ---
   'VBL': 'Beverages',
   'MCX': 'Financial Market Infrastructure', 'BSE': 'Financial Market Infrastructure',
@@ -905,6 +924,35 @@ function validateEntry_(sym, entry) {
   return entry;
 }
 
+/* ---------- rationale tidy-up after an ALT is removed ----------
+ * The model often names its alternative inside the rationale text as well as in the alternate
+ * field. When validation blanks the ALT, that clause is left pointing at nothing — observed on
+ * MARUTI, whose rationale ended "...a better alternative in the same sector being " with an empty
+ * ALT column. A dangling half-sentence is worse than the bad suggestion we removed. */
+// The trailing \.? matters: the clause often ends in a full stop ("...from the same sector."),
+// and without it the pattern could only match an unterminated fragment.
+const ALT_REFERENCE_CLAUSE =
+  /[,;]?\s*(?:,\s*)?(?:with|and)?\s*(?:a\s+)?(?:better|possible|preferred|superior|good)?\s*alternative[^.]*\.?$/i;
+// A rationale ending on a connector is an incomplete sentence regardless of the ALT. These only
+// match at the very end of the string, so a well-formed sentence is never touched.
+const DANGLING_TAIL =
+  /[\s,]+(?:being|such as|like|namely|instead of|in|to|with|of|the|a|an|is|are|from)\s*$/i;
+
+function tidyRationale_(rationale, altWasRemoved) {
+  const orig = String(rationale || '').trim();
+  let r = orig;
+  if (altWasRemoved) r = r.replace(ALT_REFERENCE_CLAUSE, '');
+  // Stripping one trailing connector can expose another, so trim repeatedly (bounded).
+  for (let i = 0; i < 3; i++) {
+    const next = r.replace(DANGLING_TAIL, '');
+    if (next === r) break;
+    r = next;
+  }
+  r = r.replace(/[\s,;:]+$/, '');
+  if (r !== orig && r && !/[.!?]$/.test(r)) r += '.';   // only punctuate what we actually edited
+  return r || orig;                                      // never return an empty rationale
+}
+
 /* ---------- ALT ticker existence check via GOOGLEFINANCE ----------
  * KNOWN_INVALID_TICKERS can only block values already observed, but every run has produced
  * brand-new invented symbols (KIRLOSKER, MAHINDRASUB, SAMBAREY, LAKSHMI in the latest one).
@@ -991,6 +1039,110 @@ function verifyAltTickersExist_(results, knownUniverse) {
     }
   });
   return results;
+}
+
+/* ---------- rationale quality: duplicates & generic filler (Section 15) ----------
+ * Measured on the 2026-08-11 export: 13% of rows shared an identical rationale — a depository,
+ * a grocery retailer, an IT firm, an ice-cream maker and an insurer all got "Valuations
+ * reasonable". Detect those, then ask the model once for company-specific replacements.
+ * Per the spec, the goal is genuine stock-specific reasoning — NOT variation for its own sake,
+ * so a regenerated rationale is only accepted if it is actually better than what it replaces. */
+
+// Phrases seen repeated verbatim across unrelated companies. Matched against the whole
+// normalised rationale, so a longer sentence that merely contains one of these is not flagged.
+const GENERIC_RATIONALES = [
+  'valuations reasonable', 'valuation reasonable', 'valuations are reasonable',
+  'rich valuations', 'valuation stretched', 'valuations stretched', 'valuation is stretched',
+  'strong sector trend', 'stable demand trends', 'growth momentum intact', 'momentum intact',
+  'stable cash flows', 'strong growth momentum', 'it demand strong', 'strong momentum',
+  'auto components demand', 'pharma sector stable', 'banking sector growth'
+];
+const MIN_RATIONALE_WORDS = 5;
+
+function normRationale_(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Returns [{sym, reason}] for rationales that are generic, too short, or already used verbatim
+// by a different company (in this batch or in previously-saved results).
+function findWeakRationales_(batchResults, existingAi) {
+  const seen = {};
+  Object.keys(existingAi || {}).forEach(s => {
+    const n = normRationale_(existingAi[s].rationale);
+    if (n) (seen[n] = seen[n] || []).push(s);
+  });
+
+  const weak = [];
+  Object.keys(batchResults).forEach(sym => {
+    const n = normRationale_(batchResults[sym].rationale);
+    if (!n) return;
+    // Deterministic placeholders are intentional — never "improve" them.
+    if (n.indexOf('no live price data') > -1 || n.indexOf('inconsistent with available price data') > -1) return;
+
+    let reason = null;
+    if (GENERIC_RATIONALES.indexOf(n) > -1) reason = 'generic phrase';
+    else if (n.split(' ').length < MIN_RATIONALE_WORDS) reason = 'too short';
+    else if (seen[n] && seen[n].indexOf(sym) === -1) reason = 'duplicate of ' + seen[n][0];
+
+    if (reason) weak.push({ sym: sym, reason: reason });
+    (seen[n] = seen[n] || []).push(sym);
+  });
+  return weak;
+}
+
+// One extra AI call for just the flagged stocks. Wrapped so any failure is non-fatal — the batch's
+// real work is already done and saved-quality beats losing the batch.
+function regenerateWeakRationales_(weak, batchResults) {
+  if (!weak.length) return;
+
+  const ctx = weak.map((w, i) => {
+    const e = batchResults[w.sym];
+    const known = KNOWN_SECTOR_MAP[w.sym];
+    const hint = SYMBOL_CONTEXT_HINTS[w.sym];
+    return (i + 1) + ') SYMBOL=' + w.sym +
+      (known ? ' | SECTOR: ' + known : '') +
+      (hint ? ' | NOTE: ' + hint : '') +
+      ' | call (do not change): ' + e.suggestion +
+      ' | rejected rationale: "' + e.rationale + '" — rejected because: ' + w.reason;
+  }).join('\n');
+
+  const prompt =
+    'You are an Indian equity analyst. Each rationale below was rejected for being generic, too ' +
+    'short, or word-for-word identical to a different company\'s.\n' +
+    'Write ONE replacement sentence (max 25 words) per stock that gives a reason specific to THAT ' +
+    'company — its actual products, end-markets, margin or growth driver, or balance-sheet position. ' +
+    'Keep the existing call unchanged; you are only rewriting the reasoning. Do not invent figures ' +
+    'you are unsure of, and do not merely reword the rejected text.\n\n' +
+    ctx + '\n\n' +
+    'Respond ONLY with a JSON array, no markdown:\n[{"symbol":"SYM","rationale":"..."}]';
+
+  try {
+    const fresh = aiChat_(prompt, 1200, function (text) {
+      const map = {};
+      parseJsonArray_(text).forEach(o => {
+        if (o.symbol && o.rationale) map[String(o.symbol).toUpperCase()] = String(o.rationale);
+      });
+      if (!Object.keys(map).length) throw new Error('no usable rationales returned');
+      return map;
+    });
+
+    weak.forEach(w => {
+      const r = fresh[w.sym];
+      if (!r) return;
+      const n = normRationale_(r);
+      // Only accept a replacement that is genuinely an improvement.
+      if (GENERIC_RATIONALES.indexOf(n) > -1 || n.split(' ').length < MIN_RATIONALE_WORDS ||
+          n === normRationale_(batchResults[w.sym].rationale)) {
+        Logger.log('· ' + w.sym + ': regenerated rationale no better — keeping original');
+        return;
+      }
+      Logger.log('✎ ' + w.sym + ': rationale regenerated (was ' + w.reason + ')');
+      batchResults[w.sym].rationale = r.trim();
+    });
+  } catch (e) {
+    // Non-fatal by design: a failed rewrite must never cost us an otherwise-good batch.
+    Logger.log('· rationale regeneration skipped: ' + e.message);
+  }
 }
 
 // Simple cycle detection over a sym->alternate adjacency map. Returns the set of symbols that
