@@ -73,11 +73,13 @@ const ATH_START_DATE = 'DATE(2000,1,1)';
 // that clearly should have a real value.
 const LIVE_PRICES_WAIT_MS = 15000;
 
-// Smaller batches reduce the risk of the model cross-wiring content between stocks in the
-// same call (e.g. writing one stock's rationale under a different stock's symbol) — traded
-// off against total analysis time, since one batch = one 1-minute trigger fire. At 5, a
-// ~120-stock portfolio takes roughly twice as long to fully analyze as it did at 10.
-const AI_BATCH_SIZE = 5;
+// ONE stock per call. At 5 the model still cross-wired content between neighbouring stocks —
+// M&M was given Hindustan Unilever's rationale and GOLDBEES was described as "Gitanjali Gems"
+// in the run of 2026-08-11. With a single stock in the call that failure becomes structurally
+// impossible, which also makes it a clean test: any wrong-company rationale that survives is a
+// knowledge gap, not an attention gap, and needs ground truth rather than a smaller batch.
+// Cost is time only (~1 stock/minute via the trigger), which the owner has explicitly accepted.
+const AI_BATCH_SIZE = 1;
 const TRIGGER_HANDLER = 'processAIBatch';
 
 /* ---------- Provider/model slots (tried in order) ----------
@@ -652,11 +654,37 @@ const SYMBOL_CONTEXT_HINTS = {
   'CUMMINSIND': 'CUMMINSIND = Cummins India Ltd — diesel and alternative-fuel engines, gensets and powergen equipment.'
 };
 
+/* The user's Screener.in quality/growth filter, in plain terms. Membership is a dense signal —
+ * a stock that clears it has low leverage, high sustained returns, multi-year sales growth,
+ * clean cash conversion and low promoter pledging all at once. Until now none of that reached
+ * the model, which was judging on price and cost basis alone. Described as prose rather than the
+ * raw boolean query because the models reason better from what it implies than from nested ANDs. */
+const SCREENER_DESCRIPTION =
+  'low leverage (debt/equity under ~0.75-1), high sustained returns (3Y ROE >10% and ROCE >15%, ' +
+  'or 5Y ROE >20% and ROCE >24%), multi-year sales growth, positive CROIC, promoter pledging ' +
+  'under 10%, healthy cash conversion (5Y OCF/earnings >0.3), and a market cap that has grown ' +
+  'over the last 5 years';
+
 function analyzeSymbols_(batch, data) {
+  const inScreener = {};
+  (data.screener || []).forEach(s => inScreener[s] = 1);
+
   const ctx = batch.map((sym, i) => {
     const h = data.p1.find(x => x.sym === sym) || data.p2.find(x => x.sym === sym);
     const pr = data.prices[sym] || {};
-    const netChg = (h && h.avg > 0 && pr.ltp) ? (((pr.ltp - h.avg) / h.avg) * 100).toFixed(1) : 'n/a';
+    // '%' is part of the value, not appended blindly — otherwise an unheld stock renders "n/a%".
+    const netChg = (h && h.avg > 0 && pr.ltp)
+      ? (((pr.ltp - h.avg) / h.avg) * 100).toFixed(1) + '%' : 'n/a';
+
+    // Valuation context that already exists in the sheet but was never sent to the model.
+    const pct = (a, b) => (a > 0 && b > 0) ? Math.round((a - b) / a * 100) + '%' : 'n/a';
+    const belowHigh = pct(pr.high52w, pr.ltp);                                  // % below 52-week high
+    const aboveLow  = (pr.low52w > 0 && pr.ltp > 0)
+      ? Math.round((pr.ltp - pr.low52w) / pr.low52w * 100) + '%' : 'n/a';       // % above 52-week low
+    const belowATH  = pct(pr.allTimeHigh, pr.ltp);                              // % below all-time high
+    const mcap = pr.mktCap > 0 ? Math.round(pr.mktCap / 1e7) + ' Cr' : 'n/a';
+    const pe   = pr.pe > 0 ? pr.pe.toFixed(1) : 'n/a (loss-making or unavailable)';
+    const scr  = inScreener[sym] ? 'PASSES the quality screen' : 'not on the screen list';
     // Feed KNOWN_SECTOR_MAP ground truth INTO the prompt, not just use it as a post-check.
     // Post-validation can only blank a bad ALT; it can't fix a rationale written about the wrong
     // business (observed: PGHH correctly ALT-blanked but still described as "Jewellery sector").
@@ -664,20 +692,33 @@ function analyzeSymbols_(batch, data) {
     const known = KNOWN_SECTOR_MAP[sym];
     const sectorNote = known ? ' | SECTOR (authoritative — use this, do not infer your own): ' + known : '';
     const hint = SYMBOL_CONTEXT_HINTS[sym] ? ' | NOTE: ' + SYMBOL_CONTEXT_HINTS[sym] : '';
-    return (i + 1) + ') SYMBOL=' + sym + sectorNote + hint + ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
-      ' | LTP:' + (pr.ltp || 'n/a') + ' | vs cost:' + netChg + '%' +
-      ' | day:' + (pr.dayChg != null ? Number(pr.dayChg).toFixed(1) + '%' : 'n/a');
+    return (i + 1) + ') SYMBOL=' + sym + sectorNote + hint +
+      ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
+      ' | LTP:' + (pr.ltp || 'n/a') + ' | vs cost:' + netChg +
+      ' | day:' + (pr.dayChg != null ? Number(pr.dayChg).toFixed(1) + '%' : 'n/a') +
+      ' | PE:' + pe + ' | mkt cap:' + mcap +
+      ' | ' + belowHigh + ' below 52w high | ' + aboveLow + ' above 52w low | ' + belowATH + ' below all-time high' +
+      ' | SCREENER: ' + scr;
   }).join('\n');
 
+  const many = batch.length > 1;
   const prompt =
     'You are an Indian equity analyst. Today is ' + new Date().toDateString() + '.\n' +
-    'Below are ' + batch.length + ' completely INDEPENDENT NSE stocks, each numbered and on its own line. ' +
-    'Treat each one as a separate, isolated analysis — do not let the sector, business, or news context of one ' +
-    'stock bleed into your answer for another. Before writing each answer, re-read that stock\'s own SYMBOL and ' +
-    'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one. ' +
+    (many
+      ? 'Below are ' + batch.length + ' completely INDEPENDENT NSE stocks, each numbered and on its own line. ' +
+        'Treat each one as a separate, isolated analysis — do not let the sector, business, or news context of one ' +
+        'stock bleed into your answer for another. Before writing each answer, re-read that stock\'s own SYMBOL and ' +
+        'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one. '
+      : 'Below is ONE NSE stock. Analyse only this company. Before answering, re-read its SYMBOL and confirm your ' +
+        'rationale and alternate describe THAT company\'s real business. ') +
     'If a stock shows LTP:n/a, there is no reliable price data for it — say so plainly in the rationale rather ' +
     'than inventing a confident-sounding call.\n' +
-    'For EACH stock, give:\n' +
+    'Base your judgement on the data given. Do NOT cite figures that are not supplied (no invented RSI, ' +
+    'margins, growth rates or price targets).\n' +
+    'SCREENER means the stock currently clears the owner\'s quality/growth filter: ' + SCREENER_DESCRIPTION + '. ' +
+    '"not on the screen list" means it either fails one of those tests or was never evaluated — treat that as a ' +
+    'mild caution at most, NEVER as a reason on its own to sell or exit.\n' +
+    (many ? 'For EACH stock, give:\n' : 'Give:\n') +
     '1. suggestion: exactly one of BUY, HOLD, SELL ON RALLY, EXIT NOW\n' +
     '2. rationale: ONE brief complete sentence (max 25 words) that conveys the full reasoning — sector trend, valuation, momentum, or business driver, SPECIFIC to that one company. No generic filler.\n' +
     '3. sector: this company\'s own sector — pick EXACTLY ONE label from this fixed list, copied exactly as written: ' + SECTOR_LIST.join(', ') + '\n' +
@@ -686,7 +727,8 @@ function analyzeSymbols_(batch, data) {
     'Only use a ticker you are genuinely confident is real and currently listed — never invent a plausible-sounding ' +
     'name or generic term (e.g. "BLUECHIP" is not a company). If you cannot name a genuinely same-sector, real, ' +
     'listed stock that is a clear improvement, output "" — an empty string is far better than a wrong or invented guess. ' +
-    'Never suggest a different-sector stock just to fill the field, and never reuse the same alternate symbol for two stocks in this batch that are not themselves in the same sector as each other.\n' +
+    'Never suggest a different-sector stock just to fill the field.' +
+    (many ? ' Never reuse the same alternate symbol for two stocks in this batch that are not themselves in the same sector as each other.' : '') + '\n' +
     '5. alt_sector: ONLY when alternate is non-empty — that alternate\'s own sector, from the SAME fixed list, and it MUST be identical to your "sector" answer above; else ""\n\n' +
     ctx + '\n\n' +
     'Respond ONLY with a JSON array, no markdown:\n' +
@@ -1240,19 +1282,69 @@ function aiChat_(prompt, maxTokens, parseResponse) {
     const key = p.getProperty(slot.key);
     if (!key) continue;
     if (slotCooldown_(slot) > Date.now()) continue;
+    const started = Date.now();
     try {
       const text = (slot.kind === 'gemini')
         ? geminiCall_(key, slot.m, prompt, maxTokens)
         : openaiCall_(key, slot.url, slot.m, prompt, maxTokens);
       const result = parseResponse ? parseResponse(text) : text;
+      bumpProviderStat_(slot, 'ok', Date.now() - started);
       Logger.log('✓ ' + slot.p + '/' + slot.m + ' answered.');
       return result;
     } catch (e) {
-      lastErr = slot.p + '/' + slot.m + ': ' + e.message;
+      // Separate the failure modes so the stats show WHY a provider is unreliable, not just that
+      // it is: a malformed-JSON provider needs a different response than a rate-limited one.
+      const msg = String(e.message || '');
+      const kind = /unparseable|no usable|JSON|Unexpected/i.test(msg) ? 'malformed'
+                 : /quota|rate limit|429/i.test(msg) ? 'ratelimited'
+                 : 'failed';
+      bumpProviderStat_(slot, kind, Date.now() - started);
+      lastErr = slot.p + '/' + slot.m + ': ' + msg;
       Logger.log('✗ ' + lastErr + ' → next slot');
     }
   }
   throw new Error('All AI providers exhausted or in cooldown. Last: ' + lastErr);
+}
+
+/* ---------- provider quality tracking (Section 19) ----------
+ * Records per-slot outcomes so it is possible to tell WHICH provider produced a given answer and
+ * which ones are actually reliable. Without this we cannot distinguish "different models disagree"
+ * from "one model is non-deterministic" — the open question behind the measured call instability.
+ * Counters only; no keys or prompt content are ever stored. */
+function bumpProviderStat_(slot, field, ms) {
+  try {
+    const key = 'PSTAT_' + slot.p + '_' + slot.m;
+    const p = props_();
+    let s = {};
+    try { s = JSON.parse(p.getProperty(key) || '{}'); } catch (e) { s = {}; }
+    s[field] = (s[field] || 0) + 1;
+    if (ms) { s.totalMs = (s.totalMs || 0) + ms; s.timed = (s.timed || 0) + 1; }
+    s.last = nowIST_();
+    p.setProperty(key, JSON.stringify(s));
+  } catch (e) { /* stats must never break a batch */ }
+}
+
+// Callable from the Apps Script editor to see which providers are actually carrying the load.
+function getProviderStats() {
+  const all = props_().getProperties();
+  const out = {};
+  Object.keys(all).forEach(k => {
+    if (k.indexOf('PSTAT_') === 0) {
+      try {
+        const s = JSON.parse(all[k]);
+        if (s.timed) s.avgMs = Math.round(s.totalMs / s.timed);
+        out[k.slice(6)] = s;
+      } catch (e) { /* ignore malformed */ }
+    }
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+function resetProviderStats() {
+  const p = props_();
+  Object.keys(p.getProperties()).forEach(k => { if (k.indexOf('PSTAT_') === 0) p.deleteProperty(k); });
+  return true;
 }
 
 function slotCooldown_(slot) {
@@ -1270,7 +1362,9 @@ function openaiCall_(key, url, model, prompt, maxTokens) {
     headers['X-Title'] = 'NK Portal';
   }
   const body = JSON.stringify({
-    model: model, temperature: 0.2, max_tokens: maxTokens,
+    // temperature 0: identical input should give an identical call. Measured flip rate between
+    // two runs on unchanged prices was 39% and then 48% at 0.2 — sampling noise was part of that.
+    model: model, temperature: 0, max_tokens: maxTokens,
     messages: [{ role: 'user', content: prompt }]
   });
   const res = slotFetch_(slot, url, {
@@ -1288,7 +1382,7 @@ function geminiCall_(key, model, prompt, maxTokens) {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     payload: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: maxTokens }
+      generationConfig: { temperature: 0, maxOutputTokens: maxTokens }   // see openaiCall_ note
     })
   });
   const parsed = JSON.parse(res);
