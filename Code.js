@@ -80,6 +80,13 @@ const LIVE_PRICES_WAIT_MS = 15000;
 // knowledge gap, not an attention gap, and needs ground truth rather than a smaller batch.
 // Cost is time only (~1 stock/minute via the trigger), which the owner has explicitly accepted.
 const AI_BATCH_SIZE = 1;
+
+// Multi-sample majority voting. The same stock is asked N times of the SAME provider at
+// temperature 0.2; a non-HOLD call is only surfaced if it repeats across a majority of samples.
+// This is what separates conviction from sampling noise: measured flip rates between identical
+// runs were 39% and 48%, meaning a single sample's non-HOLD call was close to a coin toss.
+// 3 (not 2) because 2 samples cannot produce a majority — they either agree or they don't.
+const AI_VOTE_SAMPLES = 3;
 const TRIGGER_HANDLER = 'processAIBatch';
 
 /* ---------- Provider/model slots (tried in order) ----------
@@ -734,7 +741,17 @@ function analyzeSymbols_(batch, data) {
     'Respond ONLY with a JSON array, no markdown:\n' +
     '[{"symbol":"SYM","suggestion":"...","rationale":"...","sector":"...","alternate":"...","alt_sector":"..."}]';
 
-  return aiChat_(prompt, 2200, parseAnalysisResponse_);
+  // Sample the same provider AI_VOTE_SAMPLES times, then majority-vote per symbol. The returned
+  // shape is identical to the old single-call result, so every downstream validation step
+  // (forceNoDataOverride_, validateEntry_, verifyAltTickersExist_, batch consistency) is unchanged.
+  const res = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, AI_VOTE_SAMPLES);
+  const out = {};
+  batch.forEach(sym => {
+    const voted = tallyVotes_(res.samples, sym);
+    if (voted) out[sym] = voted;
+  });
+  if (!Object.keys(out).length) throw new Error('No symbol produced a usable vote.');
+  return out;
 }
 
 // Turns one provider's raw text into the {SYMBOL: {suggestion,rationale,sector,alternate,altSector}}
@@ -1306,6 +1323,137 @@ function aiChat_(prompt, maxTokens, parseResponse) {
   throw new Error('All AI providers exhausted or in cooldown. Last: ' + lastErr);
 }
 
+/* ---------- multi-sample voting: N samples from ONE provider ----------
+ * Deliberately does NOT rotate providers between samples. If sample 1 came from Groq and sample 2
+ * from Gemini, disagreement would conflate two different things — genuine ambiguity about the
+ * stock, versus two models simply holding different views. Pinning one model measures the thing
+ * that actually matters: will it reach the same conclusion when asked again?
+ *
+ * If the pinned slot fails partway, sampling RESTARTS on the next slot rather than mixing, so
+ * every counted sample always comes from a single model. Returns the largest sample set obtained;
+ * 2 samples still vote (agree / disagree), 1 is a degraded single-sample fallback. */
+function aiChatSamples_(prompt, maxTokens, parseResponse, n) {
+  const p = props_();
+  let lastErr = 'No API keys saved.';
+  let best = null;
+
+  for (let i = 0; i < AI_SLOTS.length; i++) {
+    const slot = AI_SLOTS[i];
+    const key = p.getProperty(slot.key);
+    if (!key) continue;
+    if (slotCooldown_(slot) > Date.now()) continue;
+
+    const samples = [];
+    for (let s = 0; s < n; s++) {
+      const started = Date.now();
+      try {
+        const text = (slot.kind === 'gemini')
+          ? geminiCall_(key, slot.m, prompt, maxTokens)
+          : openaiCall_(key, slot.url, slot.m, prompt, maxTokens);
+        samples.push(parseResponse ? parseResponse(text) : text);
+        bumpProviderStat_(slot, 'ok', Date.now() - started);
+      } catch (e) {
+        const msg = String(e.message || '');
+        const kind = /unparseable|no usable|JSON|Unexpected/i.test(msg) ? 'malformed'
+                   : /quota|rate limit|429/i.test(msg) ? 'ratelimited'
+                   : 'failed';
+        bumpProviderStat_(slot, kind, Date.now() - started);
+        lastErr = slot.p + '/' + slot.m + ': ' + msg;
+        Logger.log('✗ sample ' + (s + 1) + '/' + n + ' — ' + lastErr);
+        break;                       // abandon this slot; never mix providers within a vote
+      }
+    }
+
+    if (samples.length > (best ? best.samples.length : 0)) best = { samples: samples, slot: slot };
+    if (samples.length >= 2) {
+      Logger.log('✓ ' + slot.p + '/' + slot.m + ' gave ' + samples.length + '/' + n + ' samples.');
+      return best;                   // enough to vote on
+    }
+  }
+
+  if (best && best.samples.length >= 1) {
+    Logger.log('⚠ only ' + best.samples.length + ' sample(s) available — voting degraded to single sample.');
+    return best;
+  }
+  throw new Error('All AI providers exhausted or in cooldown. Last: ' + lastErr);
+}
+
+/* Majority vote for one symbol across the samples.
+ *  - strict majority required (2 of 3, or 2 of 2)
+ *  - rationale is taken from a sample that voted WITH the majority, never a dissenter, so the
+ *    call and its reasoning can never contradict each other
+ *  - ALT is STRICT: kept only if every majority sample named the same ticker. A rotation target
+ *    that only one sample proposed is a single opinion wearing consensus clothing.
+ *  - no majority -> HOLD, blank ALT, and a rationale that says so rather than borrowing a
+ *    losing sample's reasoning. "Genuinely ambiguous" is useful information, not a failure. */
+function tallyVotes_(samples, sym) {
+  const entries = samples.map(s => s && s[sym]).filter(Boolean);
+  if (!entries.length) return null;
+
+  const counts = {};
+  entries.forEach(e => counts[e.suggestion] = (counts[e.suggestion] || 0) + 1);
+  let winner = null, top = 0;
+  Object.keys(counts).forEach(c => { if (counts[c] > top) { top = counts[c]; winner = c; } });
+
+  const cast = entries.map(e => e.suggestion).join(', ');
+  const hasMajority = top > entries.length / 2;
+
+  if (!hasMajority) {
+    bumpVoteStat_('noMajority');
+    Logger.log('🗳 ' + sym + ': [' + cast + '] -> no majority, HOLD');
+    return {
+      suggestion: 'HOLD',
+      rationale: 'AI samples disagreed (' + cast + ') — no consensus, treated as HOLD.',
+      sector: entries[0].sector || '',
+      alternate: '', altSector: ''
+    };
+  }
+
+  const winners = entries.filter(e => e.suggestion === winner);
+  const lead = winners[0];
+
+  // Strict ALT: every majority sample must name the same non-empty ticker.
+  const alts = winners.map(e => normalizeTicker_(e.alternate));
+  const altAgreed = alts[0] && alts.every(a => a === alts[0]);
+  if (!altAgreed && alts.some(a => a)) bumpVoteStat_('altDropped');
+
+  bumpVoteStat_(top === entries.length ? 'unanimous' : 'majority');
+  Logger.log('🗳 ' + sym + ': [' + cast + '] -> ' + winner + ' (' + top + '/' + entries.length + ')' +
+    (alts.some(a => a) ? (altAgreed ? ' ALT ' + alts[0] : ' ALT dropped (samples disagreed)') : ''));
+
+  return {
+    suggestion: winner,
+    rationale: lead.rationale,
+    sector: lead.sector || '',
+    alternate: altAgreed ? alts[0] : '',
+    altSector: altAgreed ? lead.altSector : ''
+  };
+}
+
+// Frequency counters so the no-majority rate is measurable from run one rather than guessed at.
+function bumpVoteStat_(field) {
+  try {
+    const p = props_();
+    let s = {};
+    try { s = JSON.parse(p.getProperty('VOTE_STATS') || '{}'); } catch (e) { s = {}; }
+    s[field] = (s[field] || 0) + 1;
+    p.setProperty('VOTE_STATS', JSON.stringify(s));
+  } catch (e) { /* stats must never break a batch */ }
+}
+function getVoteStats() {
+  let s = {};
+  try { s = JSON.parse(props_().getProperty('VOTE_STATS') || '{}'); } catch (e) { s = {}; }
+  const total = (s.unanimous || 0) + (s.majority || 0) + (s.noMajority || 0);
+  if (total) {
+    s.total = total;
+    s.noMajorityPct = Math.round((s.noMajority || 0) / total * 100);
+    s.unanimousPct  = Math.round((s.unanimous || 0) / total * 100);
+  }
+  Logger.log(JSON.stringify(s, null, 2));
+  return s;
+}
+function resetVoteStats() { props_().deleteProperty('VOTE_STATS'); return true; }
+
 /* ---------- provider quality tracking (Section 19) ----------
  * Records per-slot outcomes so it is possible to tell WHICH provider produced a given answer and
  * which ones are actually reliable. Without this we cannot distinguish "different models disagree"
@@ -1362,9 +1510,12 @@ function openaiCall_(key, url, model, prompt, maxTokens) {
     headers['X-Title'] = 'NK Portal';
   }
   const body = JSON.stringify({
-    // temperature 0: identical input should give an identical call. Measured flip rate between
-    // two runs on unchanged prices was 39% and then 48% at 0.2 — sampling noise was part of that.
-    model: model, temperature: 0, max_tokens: maxTokens,
+    // temperature 0.2, deliberately NOT 0. At 0 the model collapsed to 99% HOLD across two runs
+    // (exports 22/23) — reproducible but useless for triage, since nothing gets flagged. The
+    // variation at 0.2 is what makes multi-sample majority voting possible: sampling the same
+    // stock several times and keeping only calls that repeat is what separates conviction from
+    // noise. See AI_VOTE_SAMPLES.
+    model: model, temperature: 0.2, max_tokens: maxTokens,
     messages: [{ role: 'user', content: prompt }]
   });
   const res = slotFetch_(slot, url, {
@@ -1382,7 +1533,7 @@ function geminiCall_(key, model, prompt, maxTokens) {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     payload: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0, maxOutputTokens: maxTokens }   // see openaiCall_ note
+      generationConfig: { temperature: 0.2, maxOutputTokens: maxTokens }   // see openaiCall_ note
     })
   });
   const parsed = JSON.parse(res);
