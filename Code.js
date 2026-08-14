@@ -96,13 +96,24 @@ const TRIGGER_HANDLER = 'processAIBatch';
 const AI_SLOTS = [
   { p:'Groq',       m:'llama-3.3-70b-versatile',                 key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
   { p:'Gemini',     m:'gemini-2.0-flash',                        key:'GEMINI_API_KEY',     kind:'gemini' },
-  { p:'Groq',       m:'llama-3.1-8b-instant',                    key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
+  // Replaces llama-3.1-8b-instant, which Groq decommissioned on 16 Aug 2026 (their own recommended
+  // successor). Model ID verified against the GroqCloud supported-models list — guessing it would
+  // have recreated the dead-gemma problem: a slot that 404s forever while looking fine in code.
+  { p:'Groq',       m:'openai/gpt-oss-20b',                      key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
+  // Extra Groq slot for failover headroom. Same API key, so it adds no daily quota — but rate
+  // limits are per-model, so it survives a per-minute trip on the other two Groq models.
+  { p:'Groq',       m:'openai/gpt-oss-120b',                     key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
   { p:'Gemini',     m:'gemini-2.0-flash-lite',                   key:'GEMINI_API_KEY',     kind:'gemini' },
   { p:'Cerebras',   m:'llama-3.3-70b',                           key:'CEREBRAS_API_KEY',   kind:'openai', url:'https://api.cerebras.ai/v1/chat/completions' },
   { p:'OpenRouter', m:'meta-llama/llama-3.3-70b-instruct:free',  key:'OPENROUTER_API_KEY', kind:'openai', url:'https://openrouter.ai/api/v1/chat/completions' },
-  { p:'Mistral',    m:'mistral-small-latest',                    key:'MISTRAL_API_KEY',    kind:'openai', url:'https://api.mistral.ai/v1/chat/completions' },
-  { p:'Gemini',     m:'gemma-3-27b-it',                          key:'GEMINI_API_KEY',     kind:'gemini' }
+  { p:'Mistral',    m:'mistral-small-latest',                    key:'MISTRAL_API_KEY',    kind:'openai', url:'https://api.mistral.ai/v1/chat/completions' }
+  // REMOVED: Gemini/gemma-3-27b-it — returns HTTP 404 ("not found for API version v1beta").
+  // It could never succeed, so it only ever burned a retry before the "all providers exhausted"
+  // error, and made that error message misleading by naming itself as the last failure.
 ];
+// NOTE ON QUOTA: these are 7 slots but NOT 7 independent quotas — slots 0/2 share GROQ_API_KEY
+// and slots 1/3 share GEMINI_API_KEY. When Groq rate-limits, two slots die together. Any change
+// that multiplies calls per stock must be costed against the number of distinct KEYS, not slots.
 
 /* ============================ WEB APP ============================ */
 
@@ -741,15 +752,30 @@ function analyzeSymbols_(batch, data) {
     'Respond ONLY with a JSON array, no markdown:\n' +
     '[{"symbol":"SYM","suggestion":"...","rationale":"...","sector":"...","alternate":"...","alt_sector":"..."}]';
 
-  // Sample the same provider AI_VOTE_SAMPLES times, then majority-vote per symbol. The returned
-  // shape is identical to the old single-call result, so every downstream validation step
-  // (forceNoDataOverride_, validateEntry_, verifyAltTickersExist_, batch consistency) is unchanged.
-  const res = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, AI_VOTE_SAMPLES);
+  // CONFIRM-ONLY VOTING. Sampling every stock 3x exhausted the free-tier quota after 8 stocks —
+  // the slots share API keys (see AI_SLOTS note), so 3x calls burns ~3x quota against only 2-3
+  // real providers. But voting only exists to stop a non-HOLD call surfacing on noise: if the
+  // first sample says HOLD there is nothing to corroborate, because HOLD is already the safe
+  // default. So take one sample, and only spend the extra calls when it proposes acting.
+  const first = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, 1);
   const out = {};
+
   batch.forEach(sym => {
-    const voted = tallyVotes_(res.samples, sym);
+    const e = first.samples[0] && first.samples[0][sym];
+    if (!e) return;
+
+    if (e.suggestion === 'HOLD') {
+      bumpVoteStat_('holdNoVote');
+      out[sym] = e;                      // no corroboration needed
+      return;
+    }
+
+    // Non-HOLD proposed: get the remaining samples and require a majority.
+    const extra = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, AI_VOTE_SAMPLES - 1);
+    const voted = tallyVotes_(first.samples.concat(extra.samples), sym);
     if (voted) out[sym] = voted;
   });
+
   if (!Object.keys(out).length) throw new Error('No symbol produced a usable vote.');
   return out;
 }
@@ -1453,6 +1479,53 @@ function getVoteStats() {
   return s;
 }
 function resetVoteStats() { props_().deleteProperty('VOTE_STATS'); return true; }
+
+/* Clears every provider cooldown. Useful after a misconfiguration burned slots into cooldown for
+ * reasons unrelated to real quota (e.g. the dead gemma slot, or an over-aggressive sampling
+ * change). NOTE: if a daily quota is genuinely exhausted this only makes the next attempt fail
+ * again immediately — it does not create quota, it just stops the script skipping the slot. */
+/* Pings every configured slot once with a trivial prompt and reports which are alive. Run this
+ * from the editor before a long analysis, and after any provider deprecation email.
+ *
+ * Exists because two slots have now silently died from stale model IDs — gemma-3-27b-it (404 for
+ * an unknown period) and llama-3.1-8b-instant (decommissioned 16 Aug 2026). A dead slot never
+ * announces itself: it just burns a retry on every failover and then appears as the "last error"
+ * in the exhaustion message, sending diagnosis in the wrong direction. Costs ~1 call per slot. */
+function testAllSlots() {
+  const p = props_();
+  const report = [];
+  AI_SLOTS.forEach(slot => {
+    const name = slot.p + '/' + slot.m;
+    const key = p.getProperty(slot.key);
+    if (!key) { report.push('—  ' + name + '  (no API key saved)'); return; }
+    const cooling = slotCooldown_(slot) > Date.now();
+    const started = Date.now();
+    try {
+      const text = (slot.kind === 'gemini')
+        ? geminiCall_(key, slot.m, 'Reply with the single word: OK', 10)
+        : openaiCall_(key, slot.url, slot.m, 'Reply with the single word: OK', 10);
+      report.push('OK ' + name + '  (' + (Date.now() - started) + 'ms)' +
+        (cooling ? '  [was in cooldown — stale, safe to clear]' : '') +
+        '  reply: ' + String(text).trim().slice(0, 20));
+    } catch (e) {
+      report.push('!! ' + name + '  ' + String(e.message).slice(0, 120) +
+        (cooling ? '  [in cooldown]' : ''));
+    }
+  });
+  const out = report.join('\n');
+  Logger.log('\n' + out);
+  return out;
+}
+
+function clearProviderCooldowns() {
+  const p = props_();
+  const cleared = [];
+  Object.keys(p.getProperties()).forEach(k => {
+    if (k.indexOf('COOLDOWN_') === 0) { p.deleteProperty(k); cleared.push(k.slice(9)); }
+  });
+  Logger.log(cleared.length ? 'Cleared cooldowns: ' + cleared.join(', ') : 'No cooldowns were set.');
+  return cleared;
+}
 
 /* ---------- provider quality tracking (Section 19) ----------
  * Records per-slot outcomes so it is possible to tell WHICH provider produced a given answer and
