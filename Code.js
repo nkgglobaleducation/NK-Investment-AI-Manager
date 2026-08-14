@@ -95,7 +95,9 @@ const TRIGGER_HANDLER = 'processAIBatch';
  * Keys are optional except Groq/Gemini — empty-key slots are skipped. */
 const AI_SLOTS = [
   { p:'Groq',       m:'llama-3.3-70b-versatile',                 key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
-  { p:'Gemini',     m:'gemini-2.0-flash',                        key:'GEMINI_API_KEY',     kind:'gemini' },
+  // gemini-2.0-flash was retired ("no longer available", HTTP 404) — replaced with the newest
+  // non-preview flash, verified present via listAvailableModels().
+  { p:'Gemini',     m:'gemini-3.7-flash',                        key:'GEMINI_API_KEY',     kind:'gemini' },
   // Replaces llama-3.1-8b-instant, which Groq decommissioned on 16 Aug 2026 (their own recommended
   // successor). Model ID verified against the GroqCloud supported-models list — guessing it would
   // have recreated the dead-gemma problem: a slot that 404s forever while looking fine in code.
@@ -103,7 +105,13 @@ const AI_SLOTS = [
   // Extra Groq slot for failover headroom. Same API key, so it adds no daily quota — but rate
   // limits are per-model, so it survives a per-minute trip on the other two Groq models.
   { p:'Groq',       m:'openai/gpt-oss-120b',                     key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
-  { p:'Gemini',     m:'gemini-2.0-flash-lite',                   key:'GEMINI_API_KEY',     kind:'gemini' },
+  // Deliberately an ALIAS, not a pinned version. Every slot death so far (gemma-3-27b-it, both
+  // Gemini 2.0 models, llama-3.1-8b-instant) was a version number being retired underneath us.
+  // "-latest" tracks whatever the current flash-lite is, so the Gemini pool can never go fully
+  // dark from a retirement again. Trade-off: the underlying model can change without notice —
+  // acceptable here because a slot that silently dies is worse than one that silently shifts,
+  // and testAllSlots() now catches either.
+  { p:'Gemini',     m:'gemini-flash-lite-latest',                key:'GEMINI_API_KEY',     kind:'gemini' },
   { p:'Cerebras',   m:'llama-3.3-70b',                           key:'CEREBRAS_API_KEY',   kind:'openai', url:'https://api.cerebras.ai/v1/chat/completions' },
   { p:'OpenRouter', m:'meta-llama/llama-3.3-70b-instruct:free',  key:'OPENROUTER_API_KEY', kind:'openai', url:'https://openrouter.ai/api/v1/chat/completions' },
   { p:'Mistral',    m:'mistral-small-latest',                    key:'MISTRAL_API_KEY',    kind:'openai', url:'https://api.mistral.ai/v1/chat/completions' }
