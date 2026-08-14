@@ -739,7 +739,13 @@ function analyzeSymbols_(batch, data) {
     (many ? 'For EACH stock, give:\n' : 'Give:\n') +
     '1. suggestion: exactly one of BUY, HOLD, SELL ON RALLY, EXIT NOW\n' +
     '2. rationale: ONE brief complete sentence (max 25 words) that conveys the full reasoning — sector trend, valuation, momentum, or business driver, SPECIFIC to that one company. No generic filler.\n' +
-    '3. sector: this company\'s own sector — pick EXACTLY ONE label from this fixed list, copied exactly as written: ' + SECTOR_LIST.join(', ') + '\n' +
+    // The 44-label vocabulary is ~18% of every prompt. When every stock in the call already has an
+    // authoritative SECTOR supplied from KNOWN_SECTOR_MAP the model is not choosing from the list,
+    // only echoing what it was given — so the list is dead weight. At batch-of-1 on a single free
+    // provider that saved ~15k input tokens per full run.
+    (batch.every(s => KNOWN_SECTOR_MAP[s])
+      ? '3. sector: copy the SECTOR value supplied above for this stock, exactly as written.\n'
+      : '3. sector: this company\'s own sector — pick EXACTLY ONE label from this fixed list, copied exactly as written: ' + SECTOR_LIST.join(', ') + '\n') +
     '4. alternate: ONLY for EXIT NOW / SELL ON RALLY. Must be a REAL NSE-listed company\'s exact ticker symbol, from ' +
     'the EXACT SAME sector as this stock (e.g. SYRMA for DIXON — both EMS; INFY for TCS — both IT Services). ' +
     'Only use a ticker you are genuinely confident is real and currently listed — never invent a plausible-sounding ' +
@@ -1515,6 +1521,50 @@ function testAllSlots() {
   const out = report.join('\n');
   Logger.log('\n' + out);
   return out;
+}
+
+/* Asks each provider which models it actually serves, so AI_SLOTS can be repaired from real data
+ * instead of guesswork. Three slots have now died from stale IDs (gemma-3-27b-it, the Gemini 2.0
+ * pair, llama-3.1-8b-instant) — every one would have been caught by running this. */
+function listAvailableModels() {
+  const p = props_();
+  const out = [];
+
+  const gKey = p.getProperty('GEMINI_API_KEY');
+  if (!gKey) out.push('GEMINI: no key saved');
+  else {
+    try {
+      const res = UrlFetchApp.fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models?key=' + gKey + '&pageSize=100',
+        { muteHttpExceptions: true });
+      const j = JSON.parse(res.getContentText());
+      if (j.error) out.push('GEMINI error: ' + JSON.stringify(j.error).slice(0, 200));
+      else {
+        const usable = (j.models || [])
+          .filter(m => (m.supportedGenerationMethods || []).indexOf('generateContent') > -1)
+          .map(m => String(m.name).replace('models/', ''));
+        out.push('GEMINI models supporting generateContent (' + usable.length + '):');
+        usable.forEach(m => out.push('   ' + m));
+      }
+    } catch (e) { out.push('GEMINI fetch failed: ' + e.message); }
+  }
+
+  const qKey = p.getProperty('GROQ_API_KEY');
+  if (!qKey) out.push('GROQ: no key saved');
+  else {
+    try {
+      const res = UrlFetchApp.fetch('https://api.groq.com/openai/v1/models',
+        { headers: { Authorization: 'Bearer ' + qKey }, muteHttpExceptions: true });
+      const j = JSON.parse(res.getContentText());
+      const ids = (j.data || []).map(m => m.id).sort();
+      out.push('GROQ models (' + ids.length + '):');
+      ids.forEach(m => out.push('   ' + m));
+    } catch (e) { out.push('GROQ fetch failed: ' + e.message); }
+  }
+
+  const txt = out.join('\n');
+  Logger.log('\n' + txt);
+  return txt;
 }
 
 function clearProviderCooldowns() {
