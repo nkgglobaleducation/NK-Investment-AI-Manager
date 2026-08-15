@@ -620,6 +620,7 @@ const KNOWN_SECTOR_MAP = {
   'TRITURBINE': 'Capital Goods',                // Triveni Turbine — power generating equipment. NOT "Triton Engineering".
   'GVT&D': 'Electrical Equipment',              // GE Vernova T&D India — power transmission & distribution equipment
   'WAAREERTL': 'Renewables',                    // Waaree Renewable Technologies — renewable power generation / solar EPC
+  'WAAREEENER': 'Renewables',                   // Waaree Energies — solar PV module manufacturer. Sibling of WAAREERTL; was unmapped and got described as a "water treatment solutions provider".
   'HDFCAMC': 'Asset Management',                // HDFC Asset Management — fund management services. NOT an NBFC.
   'CUMMINSIND': 'Capital Goods',                // Cummins India — diesel/alternative-fuel engines, gensets
   'BLS': 'Other',                               // BLS International — visa & consular services outsourcing (61% of FY26 revenue)
@@ -677,6 +678,7 @@ const SYMBOL_CONTEXT_HINTS = {
   'HDFCAMC': 'HDFCAMC = HDFC Asset Management Company Ltd — mutual fund management services. An asset manager, NOT an NBFC or a bank.',
   'GVT&D': 'GVT&D = GE Vernova T&D India Ltd — power transmission and distribution equipment (GE\'s Grid Solutions business in India).',
   'WAAREERTL': 'WAAREERTL = Waaree Renewable Technologies Ltd — renewable power generation and solar EPC. Part of the Waaree Group.',
+  'WAAREEENER': 'WAAREEENER = Waaree Energies Ltd — India\'s largest solar PV module manufacturer. NOT a water treatment company. Sibling listing to WAAREERTL.',
   'CUMMINSIND': 'CUMMINSIND = Cummins India Ltd — diesel and alternative-fuel engines, gensets and powergen equipment.'
 };
 
@@ -709,7 +711,12 @@ function analyzeSymbols_(batch, data) {
       ? Math.round((pr.ltp - pr.low52w) / pr.low52w * 100) + '%' : 'n/a';       // % above 52-week low
     const belowATH  = pct(pr.allTimeHigh, pr.ltp);                              // % below all-time high
     const mcap = pr.mktCap > 0 ? Math.round(pr.mktCap / 1e7) + ' Cr' : 'n/a';
-    const pe   = pr.pe > 0 ? pr.pe.toFixed(1) : 'n/a (loss-making or unavailable)';
+    // GOOGLEFINANCE returns 0 both for a genuinely loss-making company AND when it simply has no
+    // PE for the security — the two are indistinguishable in the data. The old wording
+    // ("loss-making or unavailable") let the model pick the first branch and state it as fact:
+    // GOLDBEES, a gold ETF with no earnings at all, was described as "loss-making".
+    const pe   = pr.pe > 0 ? pr.pe.toFixed(1)
+      : 'NOT AVAILABLE (this does NOT mean loss-making — the source simply has no PE for it; do not claim either way)';
     const scr  = inScreener[sym] ? 'PASSES the quality screen' : 'not on the screen list';
     // Feed KNOWN_SECTOR_MAP ground truth INTO the prompt, not just use it as a post-check.
     // Post-validation can only blank a bad ALT; it can't fix a rationale written about the wrong
@@ -741,6 +748,15 @@ function analyzeSymbols_(batch, data) {
     'than inventing a confident-sounding call.\n' +
     'Base your judgement on the data given. Do NOT cite figures that are not supplied (no invented RSI, ' +
     'margins, growth rates or price targets).\n' +
+    // Separates stable knowledge from stale knowledge. What a company DOES is durable — Titan owning
+    // Tanishq stays true. What a sector is DOING is not: with a 2026 date in the prompt the model
+    // still produced "Hotels sector facing challenges due to COVID-19 pandemic", and phrases like
+    // "robust demand" / "sector tailwinds" read as present-tense fact while actually being recall
+    // from training data that is a year or more old.
+    'You have NO access to news, earnings releases, analyst actions or current market events. You MAY ' +
+    'use what you know about what the company does — its products, brands and business model. You must ' +
+    'NOT assert current conditions: no claims about present demand, order books, sector tailwinds or ' +
+    'headwinds, recent results, or competitive dynamics. Anchor the reasoning in the supplied numbers.\n' +
     'SCREENER means the stock currently clears the owner\'s quality/growth filter: ' + SCREENER_DESCRIPTION + '. ' +
     '"not on the screen list" means it either fails one of those tests or was never evaluated — treat that as a ' +
     'mild caution at most, NEVER as a reason on its own to sell or exit.\n' +
@@ -1516,8 +1532,11 @@ function testAllSlots() {
     const started = Date.now();
     try {
       const text = (slot.kind === 'gemini')
-        ? geminiCall_(key, slot.m, 'Reply with the single word: OK', 10)
-        : openaiCall_(key, slot.url, slot.m, 'Reply with the single word: OK', 10);
+        // 400 tokens, not 10: a reasoning model spends output budget on internal thinking before
+        // emitting any text, so a tiny budget fails it for the wrong reason (this exact false
+        // negative hid whether gemini-3.7-flash actually works).
+        ? geminiCall_(key, slot.m, 'Reply with the single word: OK', 400)
+        : openaiCall_(key, slot.url, slot.m, 'Reply with the single word: OK', 400);
       report.push('OK ' + name + '  (' + (Date.now() - started) + 'ms)' +
         (cooling ? '  [was in cooldown — stale, safe to clear]' : '') +
         '  reply: ' + String(text).trim().slice(0, 20));
@@ -1668,8 +1687,19 @@ function geminiCall_(key, model, prompt, maxTokens) {
     })
   });
   const parsed = JSON.parse(res);
-  if (!parsed.candidates || !parsed.candidates[0]) throw new Error('empty response');
-  return parsed.candidates[0].content.parts[0].text;
+  const cand = parsed.candidates && parsed.candidates[0];
+  if (!cand) throw new Error('empty response (no candidates)');
+
+  // Newer "thinking" models can return a candidate whose content has NO parts array — they spent
+  // the whole output budget reasoning and never emitted text. Reading parts[0] there threw a bare
+  // "Cannot read properties of undefined", which said nothing useful; surface finishReason instead.
+  const parts = cand.content && cand.content.parts;
+  if (!parts || !parts.length) {
+    throw new Error('no text in response (finishReason=' + (cand.finishReason || 'unknown') +
+      ') — a reasoning model may have used the entire output budget on thinking; try a larger maxTokens');
+  }
+  // Join every part rather than taking [0]: multi-part responses would otherwise be silently truncated.
+  return parts.map(p => p.text || '').join('');
 }
 
 function findSlot_(urlOrKind, model) {
@@ -1693,6 +1723,13 @@ function slotFetch_(slot, url, options) {
     if (code === 429) {
       setSlotCooldown_(slot, 90 * 1000); // per-minute limit — brief cooldown
       throw new Error('rate limited (retrying via next slot)');
+    }
+    // 5xx after the retry means the provider is overloaded, not that we did anything wrong.
+    // Give it a short cooldown so a long run stops paying the 12s retry sleep on every failover
+    // through an overloaded model — observed on gemini-3.7-flash returning 503 "high demand".
+    if (code >= 500) {
+      setSlotCooldown_(slot, 5 * 60 * 1000);
+      throw new Error('HTTP ' + code + ' (provider overloaded — 5min cooldown): ' + body.slice(0, 100));
     }
     throw new Error('HTTP ' + code + ': ' + body.slice(0, 120));
   }
