@@ -1594,6 +1594,55 @@ function listAvailableModels() {
   return txt;
 }
 
+/* PROBE ONLY — not wired into the analysis pipeline.
+ * groq/compound is a Groq "system" with built-in web search, available on the existing GROQ_API_KEY.
+ * If it can retrieve genuinely current, stock-specific information, it is the first route this
+ * project has had to real present-day conditions — everything else in the prompt is either a frozen
+ * GOOGLEFINANCE number or the model's training recall.
+ * Unknowns this probe is meant to settle: does search actually fire, is coverage of Indian
+ * mid/small caps usable, how slow is it, and does it cite sources or just assert.
+ * Costs one call. Run from the editor and read the log. */
+function testWebSearchModel() {
+  const key = props_().getProperty('GROQ_API_KEY');
+  if (!key) { Logger.log('No GROQ_API_KEY saved.'); return; }
+
+  // Deliberately a mid-cap, not a household name — Reliance would prove nothing about coverage.
+  const prompt =
+    'What are the most recent news items or business developments for the Indian listed company ' +
+    'Triveni Turbine (NSE: TRITURBINE)? Give up to 3 bullet points, each with an approximate date ' +
+    'and the source. If you cannot find recent information, say exactly that — do not guess.';
+
+  const started = Date.now();
+  try {
+    const res = UrlFetchApp.fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { Authorization: 'Bearer ' + key },
+      payload: JSON.stringify({
+        model: 'groq/compound', temperature: 0.2, max_tokens: 700,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    const code = res.getResponseCode();
+    const body = res.getContentText();
+    if (code !== 200) { Logger.log('HTTP ' + code + '\n' + body.slice(0, 800)); return body; }
+
+    const j = JSON.parse(body);
+    const msg = j.choices && j.choices[0] && j.choices[0].message;
+    const out =
+      'elapsed: ' + (Date.now() - started) + 'ms\n' +
+      'model: ' + (j.model || '?') + '\n' +
+      // executed_tools is how Groq reports that the system actually used a tool (e.g. web search)
+      // rather than answering from memory — the single most important field here.
+      'tools used: ' + JSON.stringify((msg && msg.executed_tools) || 'none reported') + '\n\n' +
+      (msg ? msg.content : '(no content)');
+    Logger.log('\n' + out);
+    return out;
+  } catch (e) {
+    Logger.log('failed: ' + e.message);
+    return 'failed: ' + e.message;
+  }
+}
+
 function clearProviderCooldowns() {
   const p = props_();
   const cleared = [];
