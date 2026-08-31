@@ -102,9 +102,17 @@ const AI_SLOTS = [
   // successor). Model ID verified against the GroqCloud supported-models list — guessing it would
   // have recreated the dead-gemma problem: a slot that 404s forever while looking fine in code.
   { p:'Groq',       m:'openai/gpt-oss-20b',                      key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
-  // Extra Groq slot for failover headroom. Same API key, so it adds no daily quota — but rate
-  // limits are per-model, so it survives a per-minute trip on the other two Groq models.
-  { p:'Groq',       m:'openai/gpt-oss-120b',                     key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions' },
+  // RESERVED — deliberately skipped by ordinary analysis. groq/compound (the live-market slot just
+  // below) runs ON this model and draws from its daily pool: measured 2026-08-17, one compound call
+  // requested 13,807 tokens against "Limit 200000, Used 198553". If routine calls drained this pool
+  // first there would be nothing left for live-market study, so reserve:true keeps the whole
+  // allowance for search. Failover headroom now comes from the two Gemini slots instead.
+  { p:'Groq',       m:'openai/gpt-oss-120b',                     key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions', reserve:true },
+  // The ONLY slot with live web access — this is what studies today's market conditions. Model ID
+  // verified by testWebSearchModel(); Groq reports genuine tool use in message.executed_tools.
+  // ~13.8k tokens per call against ~1k offline, which is precisely why the rolling queue exists:
+  // roughly 14 stocks a day get this treatment and the cycle covers the book over several days.
+  { p:'Groq',       m:'groq/compound',                           key:'GROQ_API_KEY',       kind:'openai', url:'https://api.groq.com/openai/v1/chat/completions', search:true },
   // Deliberately an ALIAS, not a pinned version. Every slot death so far (gemma-3-27b-it, both
   // Gemini 2.0 models, llama-3.1-8b-instant) was a version number being retired underneath us.
   // "-latest" tracks whatever the current flash-lite is, so the Gemini pool can never go fully
@@ -476,7 +484,23 @@ function processAIBatch(precomputedPend) {
     }
     const batch = pend.symbols.slice(0, AI_BATCH_SIZE);
     try {
-      const rawResults = analyzeSymbols_(batch, pend.data);
+      // Live-market study first, offline analysis only as a fallback. The two use DIFFERENT
+      // prompts — one instructs the model to search today's conditions, the other forbids any claim
+      // about them — so the prompt has to be chosen together with the slot, never patched after.
+      // Once the search pool 429s, slotCooldown_() makes this throw without an HTTP call, so the
+      // fallback costs nothing per batch for the rest of the day. A run therefore degrades from
+      // "today's market" to "durable business quality" instead of stopping dead, and the queue
+      // ordering means the stocks that mattered most already got the live pass.
+      let rawResults, liveStudy = true;
+      try {
+        rawResults = analyzeSymbols_(batch, pend.data, true);
+      } catch (e) {
+        if (!/exhausted|cooldown|search-capable/i.test(String(e.message || ''))) throw e;
+        liveStudy = false;
+        Logger.log('⚠ live-market pool unavailable (' + e.message + ') — offline analysis for ' + batch.join(','));
+        rawResults = analyzeSymbols_(batch, pend.data, false);
+      }
+      Logger.log((liveStudy ? '🌐 live-market' : '📴 offline') + ' analysis: ' + batch.join(','));
       // DATA → AI ANALYSIS → STRUCTURED AI RESPONSE → DETERMINISTIC VALIDATION → SAVE
       // (architect-prompt.txt Section 4). Never persist a raw AI response as-is.
       // Record which stocks originally proposed an ALT, so the tidy pass below can tell whether a
@@ -516,11 +540,38 @@ function processAIBatch(precomputedPend) {
   }
 }
 
+// % below the 52-week high — the same figure the dashboard shows as "%LOW 52WH", recomputed here
+// so ordering never depends on the UI having rendered. Returns -1 when there is no usable quote so
+// those symbols sort LAST: they cannot be analysed anyway (forceNoDataOverride_ replaces the call
+// outright) and would otherwise occupy slots ahead of real candidates when a run stops on quota.
+function belowHighPct_(pr) {
+  if (!pr || !(pr.high52w > 0) || !(pr.ltp > 0)) return -1;
+  return (pr.high52w - pr.ltp) / pr.high52w * 100;
+}
+
+// Rolling priority cycle. The free-tier daily quota is a SPEED LIMIT, not a filter — every symbol
+// gets analysed eventually, across however many days that takes, and then the cycle restarts. The
+// order only decides who is reached first when a run stops partway: screener-passing stocks lead,
+// and within each group the biggest discount to the 52-week high goes first, so quality companies
+// trading furthest below their highs are re-assessed soonest.
+function analysisOrder_(data) {
+  const inScreener = {};
+  (data.screener || []).forEach(s => inScreener[s] = 1);
+  return function (a, b) {
+    const sa = inScreener[a] ? 1 : 0, sb = inScreener[b] ? 1 : 0;
+    if (sa !== sb) return sb - sa;                      // screener-passing first
+    const da = belowHighPct_(data.prices[a]), db = belowHighPct_(data.prices[b]);
+    if (da !== db) return db - da;                      // biggest discount to 52w high first
+    return a < b ? -1 : (a > b ? 1 : 0);                // stable, so a stalled run resumes identically
+  };
+}
+
 function pendingSymbols_() {
   const data = getInitialData();
   const all = uniqueSymbols_(data);
   const symbols = all.filter(s =>
-    !data.ai[s] || !data.ai[s].suggestion || !data.ai[s].rationale);
+    !data.ai[s] || !data.ai[s].suggestion || !data.ai[s].rationale)
+    .sort(analysisOrder_(data));
   return { symbols: symbols, total: all.length, data: data };
 }
 
@@ -617,6 +668,11 @@ const KNOWN_SECTOR_MAP = {
   // from Screener.in. Earlier runs mislabeled it as a luxury/consumer brand ("Luxury demand
   // strong"), though a later run did correctly identify the L&T connection.
   'LTM': 'IT Services',
+  // Added 2026-08-31. COFORGE had no map entry, which cost twice: the model inferred its own
+  // sector (export 27 described it as "high-margin industrial automation solutions… automotive and
+  // aerospace markets" — it is mid-tier IT services), and with no authoritative sector supplied the
+  // whole 44-label SECTOR_LIST had to be pasted into that stock's prompt, ~18% of the tokens.
+  'COFORGE': 'IT Services',
   // NOTE: 'LTI' and 'LTIM' deliberately NOT listed here — both are superseded symbols for the
   // company that now trades as LTM (see KNOWN_STALE_TICKERS). LTM itself is mapped further up.
   'INFY': 'IT Services', 'TCS': 'IT Services',
@@ -706,45 +762,32 @@ const SCREENER_DESCRIPTION =
   'under 10%, healthy cash conversion (5Y OCF/earnings >0.3), and a market cap that has grown ' +
   'over the last 5 years';
 
-function analyzeSymbols_(batch, data) {
-  const inScreener = {};
-  (data.screener || []).forEach(s => inScreener[s] = 1);
-
+// TICKER-ONLY INPUT. Every market and position figure the sheet already displays — LTP, PE, market
+// cap, day%, cost basis, the 52-week and all-time-high distances, screener status, P1/P2 — is now
+// deliberately withheld from the model. Rationales built from those numbers only read the
+// spreadsheet back to the owner ("High PE, 19% below 52w high, not screened; hold until clearer
+// upside"), which is information already visible two columns to the left, and it crowded out any
+// actual judgement about the business. Those figures still do useful work — they decide analysis
+// ORDER in analysisOrder_() — but they never reach the prompt. P1/P2 is withheld for a second
+// reason: good P2 stocks migrate to P1 by hand over time, so portfolio membership is a workflow
+// artefact rather than a signal, and the same company must not be judged differently for sitting
+// in a different bucket.
+function analyzeSymbols_(batch, data, useSearch) {
   const ctx = batch.map((sym, i) => {
-    const h = data.p1.find(x => x.sym === sym) || data.p2.find(x => x.sym === sym);
     const pr = data.prices[sym] || {};
-    // '%' is part of the value, not appended blindly — otherwise an unheld stock renders "n/a%".
-    const netChg = (h && h.avg > 0 && pr.ltp)
-      ? (((pr.ltp - h.avg) / h.avg) * 100).toFixed(1) + '%' : 'n/a';
-
-    // Valuation context that already exists in the sheet but was never sent to the model.
-    const pct = (a, b) => (a > 0 && b > 0) ? Math.round((a - b) / a * 100) + '%' : 'n/a';
-    const belowHigh = pct(pr.high52w, pr.ltp);                                  // % below 52-week high
-    const aboveLow  = (pr.low52w > 0 && pr.ltp > 0)
-      ? Math.round((pr.ltp - pr.low52w) / pr.low52w * 100) + '%' : 'n/a';       // % above 52-week low
-    const belowATH  = pct(pr.allTimeHigh, pr.ltp);                              // % below all-time high
-    const mcap = pr.mktCap > 0 ? Math.round(pr.mktCap / 1e7) + ' Cr' : 'n/a';
-    // GOOGLEFINANCE returns 0 both for a genuinely loss-making company AND when it simply has no
-    // PE for the security — the two are indistinguishable in the data. The old wording
-    // ("loss-making or unavailable") let the model pick the first branch and state it as fact:
-    // GOLDBEES, a gold ETF with no earnings at all, was described as "loss-making".
-    const pe   = pr.pe > 0 ? pr.pe.toFixed(1)
-      : 'NOT AVAILABLE (this does NOT mean loss-making — the source simply has no PE for it; do not claim either way)';
-    const scr  = inScreener[sym] ? 'PASSES the quality screen' : 'not on the screen list';
-    // Feed KNOWN_SECTOR_MAP ground truth INTO the prompt, not just use it as a post-check.
-    // Post-validation can only blank a bad ALT; it can't fix a rationale written about the wrong
+    // KNOWN_SECTOR_MAP ground truth goes INTO the prompt, not just used as a post-check.
+    // Post-validation can only blank a bad ALT; it cannot fix a rationale written about the wrong
     // business (observed: PGHH correctly ALT-blanked but still described as "Jewellery sector").
-    // Telling the model the sector upfront is the only lever that reaches rationale quality.
     const known = KNOWN_SECTOR_MAP[sym];
     const sectorNote = known ? ' | SECTOR (authoritative — use this, do not infer your own): ' + known : '';
-    const hint = SYMBOL_CONTEXT_HINTS[sym] ? ' | NOTE: ' + SYMBOL_CONTEXT_HINTS[sym] : '';
-    return (i + 1) + ') SYMBOL=' + sym + sectorNote + hint +
-      ' | held:' + (h ? 'yes qty ' + h.qty : 'no (watchlist)') +
-      ' | LTP:' + (pr.ltp || 'n/a') + ' | vs cost:' + netChg +
-      ' | day:' + (pr.dayChg != null ? Number(pr.dayChg).toFixed(1) + '%' : 'n/a') +
-      ' | PE:' + pe + ' | mkt cap:' + mcap +
-      ' | ' + belowHigh + ' below 52w high | ' + aboveLow + ' above 52w low | ' + belowATH + ' below all-time high' +
-      ' | SCREENER: ' + scr;
+    // A hint BEATS the Company column. Verified 2026-08-29: GOOGLEFINANCE returns the useless
+    // "LTM Ltd" for LTIMindtree and the ambiguous "Tata Motors Ltd" for TMCV, which would re-blur
+    // the demerged Tata pair that batch-of-1 exists to keep apart. Where a hint exists it already
+    // names the business precisely, so the Company line would add nothing but noise.
+    const hint = SYMBOL_CONTEXT_HINTS[sym];
+    const identity = hint ? ' | NOTE: ' + hint
+                          : (pr.name ? ' | COMPANY: ' + pr.name : '');
+    return (i + 1) + ') SYMBOL=' + sym + sectorNote + identity;
   }).join('\n');
 
   const many = batch.length > 1;
@@ -757,25 +800,31 @@ function analyzeSymbols_(batch, data) {
         'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one. '
       : 'Below is ONE NSE stock. Analyse only this company. Before answering, re-read its SYMBOL and confirm your ' +
         'rationale and alternate describe THAT company\'s real business. ') +
-    'If a stock shows LTP:n/a, there is no reliable price data for it — say so plainly in the rationale rather ' +
-    'than inventing a confident-sounding call.\n' +
-    'Base your judgement on the data given. Do NOT cite figures that are not supplied (no invented RSI, ' +
-    'margins, growth rates or price targets).\n' +
-    // Separates stable knowledge from stale knowledge. What a company DOES is durable — Titan owning
-    // Tanishq stays true. What a sector is DOING is not: with a 2026 date in the prompt the model
-    // still produced "Hotels sector facing challenges due to COVID-19 pandemic", and phrases like
-    // "robust demand" / "sector tailwinds" read as present-tense fact while actually being recall
-    // from training data that is a year or more old.
-    'You have NO access to news, earnings releases, analyst actions or current market events. You MAY ' +
-    'use what you know about what the company does — its products, brands and business model. You must ' +
-    'NOT assert current conditions: no claims about present demand, order books, sector tailwinds or ' +
-    'headwinds, recent results, or competitive dynamics. Anchor the reasoning in the supplied numbers.\n' +
-    'SCREENER means the stock currently clears the owner\'s quality/growth filter: ' + SCREENER_DESCRIPTION + '. ' +
-    '"not on the screen list" means it either fails one of those tests or was never evaluated — treat that as a ' +
-    'mild caution at most, NEVER as a reason on its own to sell or exit.\n' +
+    // No figures are supplied at all now, so the old "don't cite unsupplied figures" caveat
+    // becomes an absolute rule — there is nothing legitimate for the model to quote.
+    'You are given ONLY the ticker, the company identity and its sector. No prices, valuations, ' +
+    'holdings or portfolio details are supplied. Never invent them: no made-up PE, market cap, ' +
+    'percentage move, price target, or claim about distance from a high or a low.\n' +
+    (useSearch
+      // Live-market pass — the entire point of the compound slot. The call must be answered from
+      // what is actually retrieved today, not from training recall.
+      ? 'You HAVE live web access. Search for this company\'s situation AS OF TODAY — recent price ' +
+        'action, latest results, order wins, analyst actions, sector conditions, material news — and ' +
+        'base your judgement on what you genuinely find. Report only what the search actually returns; ' +
+        'if it yields nothing useful, say exactly that rather than filling the gap from memory.\n'
+      // Offline fallback, used once the search pool is spent. Separates stable knowledge from stale
+      // knowledge: what a company DOES is durable (Titan owning Tanishq stays true), what a sector
+      // is DOING is not. With a 2026 date in the prompt the model still produced "Hotels sector
+      // facing challenges due to COVID-19", and "robust demand" reads as present-tense fact while
+      // actually being recall from training data a year or more old.
+      : 'You have NO access to news, earnings releases, analyst actions, prices or current market ' +
+        'events. You MAY use what you know about what the company does — its products, brands and ' +
+        'business model. You must NOT assert current conditions: no claims about present demand, ' +
+        'order books, sector tailwinds or headwinds, recent results, or competitive dynamics. Judge ' +
+        'the durable quality of the business itself and phrase it in those terms.\n') +
     (many ? 'For EACH stock, give:\n' : 'Give:\n') +
     '1. suggestion: exactly one of BUY, HOLD, SELL ON RALLY, EXIT NOW\n' +
-    '2. rationale: ONE brief complete sentence (max 25 words) that conveys the full reasoning — sector trend, valuation, momentum, or business driver, SPECIFIC to that one company. No generic filler.\n' +
+    '2. rationale: ONE brief complete sentence (max 25 words) giving the actual reason for the call, SPECIFIC to this company. No generic filler, and never a sentence that merely restates the sector.\n' +
     // The 44-label vocabulary is ~18% of every prompt. When every stock in the call already has an
     // authoritative SECTOR supplied from KNOWN_SECTOR_MAP the model is not choosing from the list,
     // only echoing what it was given — so the list is dead weight. At batch-of-1 on a single free
@@ -800,7 +849,7 @@ function analyzeSymbols_(batch, data) {
   // real providers. But voting only exists to stop a non-HOLD call surfacing on noise: if the
   // first sample says HOLD there is nothing to corroborate, because HOLD is already the safe
   // default. So take one sample, and only spend the extra calls when it proposes acting.
-  const first = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, 1);
+  const first = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, 1, useSearch);
   const out = {};
 
   batch.forEach(sym => {
@@ -814,7 +863,7 @@ function analyzeSymbols_(batch, data) {
     }
 
     // Non-HOLD proposed: get the remaining samples and require a majority.
-    const extra = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, AI_VOTE_SAMPLES - 1);
+    const extra = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, AI_VOTE_SAMPLES - 1, useSearch);
     const voted = tallyVotes_(first.samples.concat(extra.samples), sym);
     if (voted) out[sym] = voted;
   });
@@ -1360,11 +1409,16 @@ function applyBatchAltConsistency_(batchResults, existingAi) {
 // parseResponse (optional): called on each slot's raw text before it's accepted. Throwing
 // from it (e.g. malformed JSON) is treated exactly like an API/network failure for that slot —
 // caught below, logged, and rotation continues to the next slot. Only returns raw text if omitted.
+// Single-shot calls — currently only weak-rationale regeneration. Deliberately never routed to the
+// search slot: rewriting one sentence does not need live data, and a single compound call costs
+// ~13.8k tokens out of the pool reserved for actual market study. Without this filter the first
+// regeneration of the day would quietly eat most of a stock's worth of live-market budget.
 function aiChat_(prompt, maxTokens, parseResponse) {
   const p = props_();
   let lastErr = 'No API keys saved.';
   for (let i = 0; i < AI_SLOTS.length; i++) {
     const slot = AI_SLOTS[i];
+    if (!slotServes_(slot, false)) continue;
     const key = p.getProperty(slot.key);
     if (!key) continue;
     if (slotCooldown_(slot) > Date.now()) continue;
@@ -1401,13 +1455,21 @@ function aiChat_(prompt, maxTokens, parseResponse) {
  * If the pinned slot fails partway, sampling RESTARTS on the next slot rather than mixing, so
  * every counted sample always comes from a single model. Returns the largest sample set obtained;
  * 2 samples still vote (agree / disagree), 1 is a degraded single-sample fallback. */
-function aiChatSamples_(prompt, maxTokens, parseResponse, n) {
+// Which slots may serve a given call. A live-market call goes ONLY to search-capable slots; an
+// ordinary call skips both the search slot and any reserve:true slot backing it, so routine
+// analysis can never eat the web-search allowance.
+function slotServes_(slot, wantSearch) {
+  return wantSearch ? !!slot.search : (!slot.search && !slot.reserve);
+}
+
+function aiChatSamples_(prompt, maxTokens, parseResponse, n, wantSearch) {
   const p = props_();
-  let lastErr = 'No API keys saved.';
+  let lastErr = wantSearch ? 'No search-capable slot available.' : 'No API keys saved.';
   let best = null;
 
   for (let i = 0; i < AI_SLOTS.length; i++) {
     const slot = AI_SLOTS[i];
+    if (!slotServes_(slot, wantSearch)) continue;
     const key = p.getProperty(slot.key);
     if (!key) continue;
     if (slotCooldown_(slot) > Date.now()) continue;
