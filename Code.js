@@ -272,13 +272,14 @@ function getInitialData() {
   readTab_(TAB_PRICES).forEach(r => {
     const sym = String(r[0]);
     if (sym) prices[sym] = {
-      ltp: Number(r[1]) || 0,
-      dayChg: Number(r[2]) || 0,
-      high52w: Number(r[3]) || 0,
-      low52w: Number(r[4]) || 0,
-      allTimeHigh: Number(r[5]) || 0,
-      mktCap: Number(r[6]) || 0,
-      pe: Number(r[7]) || 0
+      name: String(r[1] || ''),
+      ltp: Number(r[2]) || 0,
+      dayChg: Number(r[3]) || 0,
+      high52w: Number(r[4]) || 0,
+      low52w: Number(r[5]) || 0,
+      allTimeHigh: Number(r[6]) || 0,
+      mktCap: Number(r[7]) || 0,
+      pe: Number(r[8]) || 0
     };
   });
 
@@ -323,6 +324,14 @@ function refreshLivePrices() {
   // exclusivity here, and the external HTTP call must never happen while holding the lock.
   const rows = symbols.map(s => [
     s,
+    // Company name, sheet-side only — costs no AI quota and auto-maintains as symbols are added.
+    // Verified working 2026-08-29: COFORGE → "Coforge Ltd", LANDMARK → "Landmark Cars Ltd", which
+    // are exactly the two wrong-company rationales seen in export 27 and neither has a hint entry.
+    // Falls back to '' rather than 0 because it is text; the prompt omits the line when blank.
+    // This does NOT override SYMBOL_CONTEXT_HINTS — the same test returned the useless "LTM Ltd"
+    // for LTIMindtree and the ambiguous "Tata Motors Ltd" for TMCV, which would re-blur the
+    // demerged Tata pair. Hints win; this only fills the gap where no hint exists.
+    '=IFERROR(GOOGLEFINANCE("NSE:' + s + '","name"), IFERROR(GOOGLEFINANCE("BOM:' + s + '","name"), ""))',
     '=IFERROR(GOOGLEFINANCE("NSE:' + s + '","price"), IFERROR(GOOGLEFINANCE("BOM:' + s + '","price"), 0))',
     '=IFERROR(GOOGLEFINANCE("NSE:' + s + '","changepct"), IFERROR(GOOGLEFINANCE("BOM:' + s + '","changepct"), 0))',
     '=IFERROR(GOOGLEFINANCE("NSE:' + s + '","high52"), IFERROR(GOOGLEFINANCE("BOM:' + s + '","high52"), 0))',
@@ -352,10 +361,10 @@ function refreshLivePrices() {
   const lock1 = LockService.getScriptLock();
   if (!lock1.tryLock(10000)) throw new Error('Another price refresh is already running — try again in a moment.');
   try {
-    sh = getSheet_(TAB_PRICES, ['Symbol', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']);
+    sh = getSheet_(TAB_PRICES, ['Symbol', 'Company', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']);
     sh.clearContents();
-    sh.getRange(1, 1, 1, 8).setValues([['Symbol', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']]);
-    sh.getRange(2, 1, rows.length, 8).setValues(rows);
+    sh.getRange(1, 1, 1, 9).setValues([['Symbol', 'Company', 'LTP', 'DayChgPct', '52WeekHigh', '52WeekLow', 'AllTimeHigh', 'MarketCap', 'PE']]);
+    sh.getRange(2, 1, rows.length, 9).setValues(rows);
 
     // Market indices — same refresh cycle as stock prices. These are simple real-time attributes
     // (not historical like ATH), so they resolve fast and don't need their own separate wait.
@@ -376,8 +385,8 @@ function refreshLivePrices() {
   const lock2 = LockService.getScriptLock();
   if (!lock2.tryLock(10000)) throw new Error('Another price refresh is already running — try again in a moment.');
   try {
-    vals = sh.getRange(2, 1, rows.length, 8).getValues();
-    sh.getRange(2, 1, rows.length, 8).setValues(vals); // freeze values
+    vals = sh.getRange(2, 1, rows.length, 9).getValues();
+    sh.getRange(2, 1, rows.length, 9).setValues(vals); // freeze values
 
     idxVals = idxSh.getRange(2, 1, idxRows.length, 5).getValues();
     idxSh.getRange(2, 1, idxRows.length, 5).setValues(idxVals); // freeze values
@@ -390,13 +399,14 @@ function refreshLivePrices() {
   const prices = {};
   vals.forEach(r => {
     prices[String(r[0])] = {
-      ltp: Number(r[1]) || 0,
-      dayChg: Number(r[2]) || 0,
-      high52w: Number(r[3]) || 0,
-      low52w: Number(r[4]) || 0,
-      allTimeHigh: Number(r[5]) || 0,
-      mktCap: Number(r[6]) || 0,
-      pe: Number(r[7]) || 0
+      name: String(r[1] || ''),
+      ltp: Number(r[2]) || 0,
+      dayChg: Number(r[3]) || 0,
+      high52w: Number(r[4]) || 0,
+      low52w: Number(r[5]) || 0,
+      allTimeHigh: Number(r[6]) || 0,
+      mktCap: Number(r[7]) || 0,
+      pe: Number(r[8]) || 0
     };
   });
   const indices = {};
@@ -679,7 +689,10 @@ const SYMBOL_CONTEXT_HINTS = {
   'GVT&D': 'GVT&D = GE Vernova T&D India Ltd — power transmission and distribution equipment (GE\'s Grid Solutions business in India).',
   'WAAREERTL': 'WAAREERTL = Waaree Renewable Technologies Ltd — renewable power generation and solar EPC. Part of the Waaree Group.',
   'WAAREEENER': 'WAAREEENER = Waaree Energies Ltd — India\'s largest solar PV module manufacturer. NOT a water treatment company. Sibling listing to WAAREERTL.',
-  'CUMMINSIND': 'CUMMINSIND = Cummins India Ltd — diesel and alternative-fuel engines, gensets and powergen equipment.'
+  'CUMMINSIND': 'CUMMINSIND = Cummins India Ltd — diesel and alternative-fuel engines, gensets and powergen equipment.',
+  // GOOGLEFINANCE returns the useless "LTM Ltd" for this ticker (verified 2026-08-29), so the new
+  // Company column cannot cover it — this hint is the only thing that identifies the business.
+  'LTM': 'LTM = LTIMindtree Ltd — large-cap IT services and consulting, formed by the L&T Infotech / Mindtree merger. A major Indian IT firm, not a small obscure company despite the terse ticker.'
 };
 
 /* The user's Screener.in quality/growth filter, in plain terms. Membership is a dense signal —
