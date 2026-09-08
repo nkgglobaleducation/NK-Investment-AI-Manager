@@ -156,6 +156,7 @@
       <label>Screener CSV (NSE codes)</label>
       <input type="file" id="fileScr" accept=".csv">
       <div class="side-note" id="noteScr">No data yet</div>
+      <div class="side-note hidden" id="staleScrWarn" style="color:#ff8e8e;font-weight:700;margin-top:4px"></div>
       <button class="btn btn-load" id="btnScr" onclick="loadScreener()">📂 Load Screener CSV</button>
     </div>
 
@@ -173,6 +174,10 @@
 
     <!-- ---------- DASHBOARD ---------- -->
     <div id="tab-dash">
+      <div id="staleBanner" class="hidden" style="background:#fff3cd;border:1px solid #ffeeba;color:#856404;padding:8px 12px;border-radius:6px;margin:10px 0 4px;font-size:11.5px;display:flex;align-items:center;justify-content:space-between">
+        <span>⏰ <b>Screener Stale Alert:</b> Uploaded Screener CSV is <b id="staleDays">30+</b> days old. As on the 15th monthly cut-off, please upload a fresh Screener CSV to keep 12-month consistency tracking up to date.</span>
+        <button onclick="document.getElementById('staleBanner').classList.add('hidden')" style="background:none;border:none;cursor:pointer;font-weight:700;font-size:13px;color:#856404;margin-left:12px">×</button>
+      </div>
       <div class="stats">
         <div class="stat">
           <div class="lbl">P1 PORTFOLIO</div>
@@ -237,7 +242,7 @@
             <col style="width:46px"><col style="width:48px"><col style="width:58px">
             <col style="width:44px"><col style="width:56px"><col style="width:56px">
             <col style="width:56px"><col style="width:80px"><col style="width:34px">
-            <col style="width:30px"><col style="width:28px">
+            <col style="width:30px"><col style="width:50px">
             <col style="width:86px"><col><col style="width:58px">
           </colgroup>
           <thead><tr id="theadRow"></tr></thead>
@@ -304,7 +309,7 @@ const FILTER_GROUPS = {
   // Own group, so these AND with the others (Screener + Buy = buy-rated screener stocks).
   // SCRN and NOTSCRN sit in the SAME group, so selecting both OR's back to everything — the same
   // way P1 + P2 + Not held does.
-  SCRN:'scrn', NOTSCRN:'scrn',
+  SCRN:'scrn', CORE:'scrn', DROPOUT:'scrn', NOTSCRN:'scrn',
   WATCH:'watch'
 };
 let pollTimer = null;
@@ -362,6 +367,32 @@ function updateNotes(){
   note('noteP1',  DATA.p1.length,  m.p1Saved);
   note('noteP2',  DATA.p2.length,  m.p2Saved);
   note('noteScr', DATA.screener.length, m.screenerSaved);
+
+  // Check if Screener CSV is more than 30 days old as on 15th of Month
+  const ts = m.screenerSavedTs;
+  if (ts && DATA.screener.length > 0) {
+    const daysOld = Math.floor((Date.now() - ts) / (1000 * 60 * 60 * 24));
+    const isStale = daysOld >= 30;
+    const warnEl = document.getElementById('staleScrWarn');
+    const bannerEl = document.getElementById('staleBanner');
+    const daysEl = document.getElementById('staleDays');
+    if (warnEl) {
+      if (isStale) {
+        warnEl.textContent = '⚠ ' + daysOld + 'd old (>30d stale as on 15th)';
+        warnEl.classList.remove('hidden');
+      } else {
+        warnEl.classList.add('hidden');
+      }
+    }
+    if (bannerEl && daysEl) {
+      if (isStale) {
+        daysEl.textContent = daysOld;
+        bannerEl.classList.remove('hidden');
+      } else {
+        bannerEl.classList.add('hidden');
+      }
+    }
+  }
 }
 function note(id, n, saved){
   document.getElementById(id).textContent =
@@ -374,7 +405,16 @@ function rebuild(){
   const seen = {};
   DATA.p1.forEach(h => { ROWS.push(makeRow(h,'P1')); seen[h.sym]=1; });
   DATA.p2.forEach(h => { ROWS.push(makeRow(h,'P2')); seen[h.sym]=1; });
-  DATA.screener.forEach(s => { if(!seen[s]) ROWS.push(makeRow({sym:s,qty:0,avg:0}, '')); });
+  DATA.screener.forEach(s => { if(!seen[s]) { ROWS.push(makeRow({sym:s,qty:0,avg:0}, '')); seen[s]=1; } });
+  if (DATA.screenerHistory) {
+    Object.keys(DATA.screenerHistory).forEach(s => {
+      const info = DATA.screenerHistory[s];
+      if (info && info.status === 'DROPOUT' && !seen[s]) {
+        ROWS.push(makeRow({sym:s, qty:0, avg:0}, ''));
+        seen[s] = 1;
+      }
+    });
+  }
   renderStats(); renderFilters(); renderTable(); renderIndices();
 }
 
@@ -398,6 +438,18 @@ function makeRow(h, port){
   
   // %Low w.r.t all time high: ((AllTimeHigh - LTP) / AllTimeHigh) * 100
   const lowATHPct = (allTimeHigh > 0 && ltp > 0) ? ((allTimeHigh - ltp) / allTimeHigh * 100) : 0;
+
+  // Screener 12-month status
+  const inScreener = DATA.screener && DATA.screener.indexOf(h.sym) > -1;
+  const scInfo = (DATA.screenerHistory && DATA.screenerHistory[h.sym]) || null;
+  let scrObj = null;
+  if (inScreener) {
+    const st = scInfo ? scInfo.status : 'NEW';
+    const sc = scInfo ? scInfo.score : '1/12';
+    scrObj = { active: true, status: st, score: sc };
+  } else if (scInfo && scInfo.status === 'DROPOUT') {
+    scrObj = { active: false, status: 'DROPOUT', score: scInfo.score };
+  }
   
   return {
     sym:h.sym, qty:h.qty, avg:h.avg, ltp:ltp,
@@ -410,7 +462,7 @@ function makeRow(h, port){
     mktCap: pr.mktCap || 0,
     pe: pr.pe || 0,
     port:port,
-    scr: DATA.screener.indexOf(h.sym) > -1,
+    scr: scrObj,
     sug: ai.suggestion || '',
     rat: ai.rationale || '',
     alt: ai.alternate || ''
@@ -458,6 +510,23 @@ function badge(sug){
   return '<span class="badge '+(map[sug]||'b-hold')+'">'+(short[sug]||sug)+'</span>';
 }
 
+function renderScrBadge(scr){
+  if (!scr) return '<span class="b-none">—</span>';
+  if (scr.status === 'CORE') {
+    return '<span class="badge b-buy" style="font-size:9px" title="Core Compounder: passed ' + scr.score + ' monthly cycles">✓ ' + scr.score + '</span>';
+  }
+  if (scr.status === 'REGULAR') {
+    return '<span class="badge b-hold" style="font-size:9px" title="Regular Screener: passed ' + scr.score + ' monthly cycles">✓ ' + scr.score + '</span>';
+  }
+  if (scr.status === 'NEW') {
+    return '<span class="badge b-rally" style="font-size:9px" title="New Entrant: ' + scr.score + ' monthly cycles">✓ NEW</span>';
+  }
+  if (scr.status === 'DROPOUT') {
+    return '<span class="badge b-exit" style="font-size:9px" title="Recent Dropout: passed ' + scr.score + ' monthly cycles previously, but missed current cutoff">⚠ DROP</span>';
+  }
+  return '<span class="b-none">—</span>';
+}
+
 function matchChip(key, r){
   switch(key){
     case 'EXIT':    return r.sug==='EXIT NOW';
@@ -468,8 +537,10 @@ function matchChip(key, r){
     case 'P1':      return r.port==='P1';
     case 'P2':      return r.port==='P2';
     case 'NOTHELD': return !r.port;
-    case 'SCRN':    return !!r.scr;
-    case 'NOTSCRN': return !r.scr;
+    case 'SCRN':    return !!(r.scr && r.scr.active);
+    case 'CORE':    return !!(r.scr && r.scr.status === 'CORE');
+    case 'DROPOUT': return !!(r.scr && r.scr.status === 'DROPOUT');
+    case 'NOTSCRN': return !(r.scr && r.scr.active);
     case 'WATCH':   return DATA.watchlist.indexOf(r.sym)>-1;
   }
   return true;
@@ -496,14 +567,16 @@ function renderFilters(){
     P1: ROWS.filter(r=>r.port==='P1').length,
     P2: ROWS.filter(r=>r.port==='P2').length,
     NOTHELD: ROWS.filter(r=>!r.port).length,
-    SCRN: ROWS.filter(r=>r.scr).length,
-    NOTSCRN: ROWS.filter(r=>!r.scr).length,
+    SCRN: ROWS.filter(r=>r.scr && r.scr.active).length,
+    CORE: ROWS.filter(r=>r.scr && r.scr.status === 'CORE').length,
+    DROPOUT: ROWS.filter(r=>r.scr && r.scr.status === 'DROPOUT').length,
+    NOTSCRN: ROWS.filter(r=>!r.scr || !r.scr.active).length,
     WATCH: DATA.watchlist.length
   };
   const defs = [
     ['ALL','All'],['EXIT','Exit now'],['RALLY','Sell on rally'],['BUY','Buy'],
     ['HOLD','Hold'],['PENDING','Pending'],['P1','P1'],['P2','P2'],
-    ['NOTHELD','Not held'],['SCRN','Screener'],['NOTSCRN','Non-screener'],['WATCH','Watchlist']
+    ['NOTHELD','Not held'],['SCRN','Screener'],['CORE','Core 12M'],['DROPOUT','Dropouts'],['NOTSCRN','Non-screener'],['WATCH','Watchlist']
   ];
   const anySelected = Object.keys(activeFilters).length > 0;
   const chips = defs.map(d => {
@@ -561,7 +634,7 @@ function renderTable(){
       +'<td title="'+fmtMktCap(r.mktCap)+'">'+fmtMktCap(r.mktCap)+'</td>'
       +'<td>'+fmtPE(r.pe)+'</td>'
       +'<td>'+(r.port?'<span class="badge b-'+r.port.toLowerCase()+'">'+r.port+'</span>':'<span class="b-none">—</span>')+'</td>'
-      +'<td>'+(r.scr?'<span class="tick">✓</span>':'<span class="b-none">—</span>')+'</td>'
+      +'<td>'+renderScrBadge(r.scr)+'</td>'
       +'<td class="l">'+badge(r.sug)+'</td>'
       +'<td class="l rat" title="'+String(r.rat).replace(/"/g,'&quot;')+'">'+(r.rat||'—')+'</td>'
       +'<td class="l" title="'+r.alt+'">'+(r.alt||'—')+'</td>'
@@ -738,7 +811,8 @@ function exportCSV(){
   const lines = filteredRows().map(r=>[
     r.sym,r.qty,r.avg,r.ltp,r.inv.toFixed(0),r.cur.toFixed(0),r.pnl.toFixed(0),
     r.netChg.toFixed(1),r.dayChg.toFixed(1),r.low52w.toFixed(1),r.high52w.toFixed(1),
-    r.lowATH.toFixed(1),(r.mktCap/1e7).toFixed(0),r.pe.toFixed(1),r.port,(r.scr?'YES':''),
+    r.lowATH.toFixed(1),(r.mktCap/1e7).toFixed(0),r.pe.toFixed(1),r.port,
+    (r.scr ? (r.scr.status + (r.scr.score ? (' (' + r.scr.score + ')') : '')) : ''),
     r.sug,'"'+String(r.rat).replace(/"/g,'""')+'"',r.alt
   ].join(','));
   const blob = new Blob([head+'\n'+lines.join('\n')], {type:'text/csv'});

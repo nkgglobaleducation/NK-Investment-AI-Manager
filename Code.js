@@ -14,12 +14,13 @@
 
 const SHEET_ID = '1i-yJx4H3PUKhaADvxDPJIVV3Z4gmPtjdGbuejQwWpCw';
 
-const TAB_P1       = 'P1_Holdings';
-const TAB_P2       = 'P2_Holdings';
-const TAB_SCREENER = 'Screener';
-const TAB_PRICES   = 'LivePrices';
-const TAB_AI       = 'AI_Analysis';
-const TAB_INDICES  = 'Indices';
+const TAB_P1               = 'P1_Holdings';
+const TAB_P2               = 'P2_Holdings';
+const TAB_SCREENER         = 'Screener';
+const TAB_SCREENER_HISTORY = 'Screener_History';
+const TAB_PRICES           = 'LivePrices';
+const TAB_AI               = 'AI_Analysis';
+const TAB_INDICES          = 'Indices';
 // Scratch tab used only to probe whether a proposed ALT ticker actually exists (see
 // verifyAltTickersExist_). Created hidden on first use; safe to delete — it is rebuilt on demand
 // and holds no durable data.
@@ -190,7 +191,7 @@ function uploadCSV(type, csvText) {
     const codes = [];
     for (let i = 1; i < rows.length; i++) {
       const c = String(rows[i][0] || '').trim();
-      if (c) codes.push([c]);
+      if (c) codes.push(c);
     }
     // Lock only the sheet write — CSV parsing above is in-memory and needs no exclusivity.
     const lock = LockService.getScriptLock();
@@ -199,8 +200,12 @@ function uploadCSV(type, csvText) {
       const sh = getSheet_(TAB_SCREENER, ['NSE_Code']);
       sh.clearContents();
       sh.getRange(1, 1).setValue('NSE_Code');
-      if (codes.length) sh.getRange(2, 1, codes.length, 1).setValues(codes);
+      if (codes.length) sh.getRange(2, 1, codes.length, 1).setValues(codes.map(c => [c]));
+      
+      // Update 12-month rolling history anchored on the 15th
+      updateScreenerHistory_(codes, now);
       setMeta_('SCREENER_SAVED', now);
+      setMeta_('SCREENER_SAVED_TS', String(Date.now()));
     } finally {
       lock.releaseLock();
     }
@@ -234,6 +239,155 @@ function uploadCSV(type, csvText) {
     lock.releaseLock();
   }
   return { count: data.length, saved: now };
+}
+
+/* ====================== SCREENER 12-MONTH HISTORY & CUT-OFF (15th) ====================== */
+
+// Monthly cycle calculation anchored on the 15th of the month.
+// Date <= 15 belongs to the cycle ending on the 15th of current month (YYYY-MM).
+// Date > 15 belongs to the cycle ending on the 15th of next month (YYYY-(MM+1)).
+function getCycleKey_(d) {
+  const dt = d ? new Date(d) : new Date();
+  const year = dt.getFullYear();
+  const month = dt.getMonth() + 1; // 1-12
+  const day = dt.getDate();
+  let cMonth = (day > 15) ? (month + 1) : month;
+  let cYear = year;
+  if (cMonth > 12) { cMonth = 1; cYear++; }
+  return cYear + '-' + (cMonth < 10 ? '0' : '') + cMonth;
+}
+
+// Returns the last 12 monthly cycle keys starting from current cycle down to 11 cycles back.
+function getLast12Cycles_(d) {
+  const curKey = getCycleKey_(d);
+  const parts = curKey.split('-').map(Number);
+  let y = parts[0], m = parts[1];
+  const cycles = [];
+  for (let i = 0; i < 12; i++) {
+    let cy = y;
+    let cm = m - i;
+    while (cm <= 0) {
+      cm += 12;
+      cy -= 1;
+    }
+    cycles.push(cy + '-' + (cm < 10 ? '0' : '') + cm);
+  }
+  return cycles;
+}
+
+function readScreenerHistory_() {
+  const sh = ss().getSheetByName(TAB_SCREENER_HISTORY);
+  if (!sh || sh.getLastRow() < 2) return {};
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues();
+  const history = {};
+  rows.forEach(r => {
+    const sym = String(r[0] || '').trim().toUpperCase();
+    if (!sym) return;
+    let histObj = {};
+    try { histObj = JSON.parse(r[5] || '{}'); } catch (e) { histObj = {}; }
+    history[sym] = {
+      status: String(r[1] || 'INACTIVE'),
+      score: String(r[2] || '0/12'),
+      scoreNum: Number(r[3]) || 0,
+      lastUploaded: String(r[4] || ''),
+      cycles: histObj
+    };
+  });
+  return history;
+}
+
+function updateScreenerHistory_(uploadedCodes, nowStr) {
+  const curCycles = getLast12Cycles_(new Date());
+  const curCycle = curCycles[0];
+  const prevCycle = curCycles[1];
+
+  const existing = readScreenerHistory_();
+  const uploadedSet = {};
+  uploadedCodes.forEach(c => { uploadedSet[String(c).trim().toUpperCase()] = true; });
+
+  const allSymbols = {};
+  Object.keys(existing).forEach(s => allSymbols[s] = true);
+  Object.keys(uploadedSet).forEach(s => allSymbols[s] = true);
+
+  const outRows = [];
+  const updatedMap = {};
+
+  Object.keys(allSymbols).forEach(sym => {
+    const isUploaded = !!uploadedSet[sym];
+    const prev = existing[sym] || { cycles: {}, scoreNum: 0, lastUploaded: '' };
+    const cyclesObj = prev.cycles || {};
+
+    // For current cycle, set to 1 if in latest upload, 0 if not
+    cyclesObj[curCycle] = isUploaded ? 1 : 0;
+
+    let scoreNum = 0;
+    curCycles.forEach(c => { if (cyclesObj[c]) scoreNum++; });
+    const scoreStr = scoreNum + '/12';
+
+    let statusTag = 'INACTIVE';
+    if (isUploaded) {
+      if (scoreNum >= 6) statusTag = 'CORE';
+      else if (scoreNum >= 3) statusTag = 'REGULAR';
+      else statusTag = 'NEW';
+    } else {
+      // Not in latest upload: was it in the immediate previous cycle or had >= 2 appearances in 12M?
+      if (cyclesObj[prevCycle] === 1 || scoreNum >= 2) {
+        statusTag = 'DROPOUT';
+      }
+    }
+
+    const lastUp = isUploaded ? nowStr : (prev.lastUploaded || nowStr);
+    updatedMap[sym] = {
+      status: statusTag,
+      score: scoreStr,
+      scoreNum: scoreNum,
+      lastUploaded: lastUp,
+      cycles: cyclesObj
+    };
+
+    outRows.push([sym, statusTag, scoreStr, scoreNum, lastUp, JSON.stringify(cyclesObj)]);
+  });
+
+  const sh = getSheet_(TAB_SCREENER_HISTORY, ['Symbol', 'Status', 'Score12M', 'CyclesPresent', 'LastUploaded', 'CycleHistoryJson']);
+  sh.clearContents();
+  sh.getRange(1, 1, 1, 6).setValues([['Symbol', 'Status', 'Score12M', 'CyclesPresent', 'LastUploaded', 'CycleHistoryJson']]);
+  if (outRows.length) {
+    sh.getRange(2, 1, outRows.length, 6).setValues(outRows);
+  }
+  return updatedMap;
+}
+
+/* ====================== LIVE STOCK NEWS (Google News RSS) ====================== */
+
+function fetchStockNews_(sym, companyName) {
+  try {
+    const term = companyName ? (companyName + ' ' + sym) : (sym + ' stock');
+    const url = 'https://news.google.com/rss/search?q=' + encodeURIComponent(term + ' NSE') + '&hl=en-IN&gl=IN&ceid=IN:en';
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return [];
+    const xml = res.getContentText();
+    const items = [];
+    const re = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<pubDate>(.*?)<\/pubDate>[\s\S]*?<\/item>/gi;
+    let match;
+    while ((match = re.exec(xml)) !== null && items.length < 3) {
+      let title = match[1].replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1')
+                          .replace(/&amp;/g, '&')
+                          .replace(/&quot;/g, '"')
+                          .replace(/&#39;/g, "'")
+                          .trim();
+      let pubDate = match[2].trim();
+      try {
+        const d = new Date(pubDate);
+        if (!isNaN(d.getTime())) pubDate = Utilities.formatDate(d, 'Asia/Kolkata', 'dd MMM');
+      } catch (e) {}
+      if (title && !/Google News/i.test(title)) {
+        items.push(title + ' (' + pubDate + ')');
+      }
+    }
+    return items;
+  } catch (e) {
+    return [];
+  }
 }
 
 /* ====================== INITIAL LOAD ====================== */
@@ -275,6 +429,7 @@ function getInitialData() {
   const p1 = readTab_(TAB_P1).map(r => ({ sym: String(r[0]), qty: Number(r[1]), avg: Number(r[2]) }));
   const p2 = readTab_(TAB_P2).map(r => ({ sym: String(r[0]), qty: Number(r[1]), avg: Number(r[2]) }));
   const screener = readTab_(TAB_SCREENER).map(r => String(r[0])).filter(Boolean);
+  const screenerHistory = readScreenerHistory_();
 
   const prices = {};
   readTab_(TAB_PRICES).forEach(r => {
@@ -299,11 +454,12 @@ function getInitialData() {
   const ai = readAI_();
 
   return {
-    p1: p1, p2: p2, screener: screener,
+    p1: p1, p2: p2, screener: screener, screenerHistory: screenerHistory,
     prices: prices, ai: ai, watchlist: watchlist, indices: readIndices_(),
     meta: {
       p1Saved: getMeta_('P1_SAVED'), p2Saved: getMeta_('P2_SAVED'),
       screenerSaved: getMeta_('SCREENER_SAVED'),
+      screenerSavedTs: Number(getMeta_('SCREENER_SAVED_TS') || 0),
       pricesSaved: getMeta_('PRICES_SAVED'), aiSaved: getMeta_('AI_SAVED')
     },
     keys: getKeyStatus(),
@@ -434,6 +590,11 @@ function uniqueSymbols_(data) {
   data.p1.forEach(h => set[h.sym] = 1);
   data.p2.forEach(h => set[h.sym] = 1);
   data.screener.forEach(s => set[s] = 1);
+  if (data.screenerHistory) {
+    Object.keys(data.screenerHistory).forEach(s => {
+      if (data.screenerHistory[s] && data.screenerHistory[s].status === 'DROPOUT') set[s] = 1;
+    });
+  }
   return Object.keys(set);
 }
 
@@ -557,9 +718,16 @@ function belowHighPct_(pr) {
 function analysisOrder_(data) {
   const inScreener = {};
   (data.screener || []).forEach(s => inScreener[s] = 1);
+  const isDropout = {};
+  if (data.screenerHistory) {
+    Object.keys(data.screenerHistory).forEach(s => {
+      if (data.screenerHistory[s] && data.screenerHistory[s].status === 'DROPOUT') isDropout[s] = 1;
+    });
+  }
   return function (a, b) {
-    const sa = inScreener[a] ? 1 : 0, sb = inScreener[b] ? 1 : 0;
-    if (sa !== sb) return sb - sa;                      // screener-passing first
+    const sa = inScreener[a] ? 2 : (isDropout[a] ? 1 : 0);
+    const sb = inScreener[b] ? 2 : (isDropout[b] ? 1 : 0);
+    if (sa !== sb) return sb - sa;                      // screener-passing first, then dropouts, then rest
     const da = belowHighPct_(data.prices[a]), db = belowHighPct_(data.prices[b]);
     if (da !== db) return db - da;                      // biggest discount to 52w high first
     return a < b ? -1 : (a > b ? 1 : 0);                // stable, so a stalled run resumes identically
@@ -776,18 +944,38 @@ function analyzeSymbols_(batch, data, useSearch) {
   const ctx = batch.map((sym, i) => {
     const pr = data.prices[sym] || {};
     // KNOWN_SECTOR_MAP ground truth goes INTO the prompt, not just used as a post-check.
-    // Post-validation can only blank a bad ALT; it cannot fix a rationale written about the wrong
-    // business (observed: PGHH correctly ALT-blanked but still described as "Jewellery sector").
     const known = KNOWN_SECTOR_MAP[sym];
     const sectorNote = known ? ' | SECTOR (authoritative — use this, do not infer your own): ' + known : '';
-    // A hint BEATS the Company column. Verified 2026-08-29: GOOGLEFINANCE returns the useless
-    // "LTM Ltd" for LTIMindtree and the ambiguous "Tata Motors Ltd" for TMCV, which would re-blur
-    // the demerged Tata pair that batch-of-1 exists to keep apart. Where a hint exists it already
-    // names the business precisely, so the Company line would add nothing but noise.
+    // A hint BEATS the Company column.
     const hint = SYMBOL_CONTEXT_HINTS[sym];
     const identity = hint ? ' | NOTE: ' + hint
                           : (pr.name ? ' | COMPANY: ' + pr.name : '');
-    return (i + 1) + ') SYMBOL=' + sym + sectorNote + identity;
+
+    // Live news headlines via Google News RSS (zero token cost)
+    const news = fetchStockNews_(sym, pr.name);
+    const newsNote = news.length ? ' | RECENT NEWS: ' + news.join(' ; ') : '';
+
+    // Screener 12-month consistency status
+    const scInfo = (data.screenerHistory && data.screenerHistory[sym]) || null;
+    let scrNote = '';
+    if (scInfo) {
+      if (scInfo.status === 'CORE') scrNote = ' | SCREENER: Core compounder (passed ' + scInfo.score + ' monthly cycles)';
+      else if (scInfo.status === 'DROPOUT') scrNote = ' | SCREENER: Recent dropout (passed ' + scInfo.score + ' monthly cycles previously, but missed current cutoff)';
+      else if (scInfo.status === 'REGULAR') scrNote = ' | SCREENER: Regular qualification (' + scInfo.score + ' monthly cycles)';
+      else if (scInfo.status === 'NEW') scrNote = ' | SCREENER: Newly qualified (' + scInfo.score + ' monthly cycles)';
+    }
+
+    // Price momentum & valuation signals
+    let trendNote = '';
+    if (pr.ltp > 0) {
+      const low52 = pr.high52w > 0 ? ((pr.high52w - pr.ltp) / pr.high52w * 100).toFixed(1) : null;
+      const high52 = pr.low52w > 0 ? ((pr.ltp - pr.low52w) / pr.low52w * 100).toFixed(1) : null;
+      const dayMove = pr.dayChg ? ((pr.dayChg > 0 ? '+' : '') + pr.dayChg.toFixed(1) + '%') : '0.0%';
+      trendNote = ' | MOMENTUM: Day ' + dayMove + (low52 ? (', ' + low52 + '% below 52WH') : '') +
+                  (high52 ? (', ' + high52 + '% above 52WL') : '') + (pr.pe > 0 ? (', PE ' + pr.pe.toFixed(1)) : '');
+    }
+
+    return (i + 1) + ') SYMBOL=' + sym + sectorNote + identity + scrNote + trendNote + newsNote;
   }).join('\n');
 
   const many = batch.length > 1;
@@ -800,35 +988,16 @@ function analyzeSymbols_(batch, data, useSearch) {
         'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one. '
       : 'Below is ONE NSE stock. Analyse only this company. Before answering, re-read its SYMBOL and confirm your ' +
         'rationale and alternate describe THAT company\'s real business. ') +
-    // No figures are supplied at all now, so the old "don't cite unsupplied figures" caveat
-    // becomes an absolute rule — there is nothing legitimate for the model to quote.
-    'You are given ONLY the ticker, the company identity and its sector. No prices, valuations, ' +
-    'holdings or portfolio details are supplied. Never invent them: no made-up PE, market cap, ' +
-    'percentage move, price target, or claim about distance from a high or a low.\n' +
+    'You are provided with company identity, sector, screener 12-month consistency, price momentum, and verified recent news developments as of today.\n' +
+    'Base your evaluation on business fundamentals, market trend/momentum, and news catalysts. If the stock is a screener dropout, evaluate whether the drop reflects temporary noise or deteriorating fundamentals.\n' +
     (useSearch
-      // Live-market pass — the entire point of the compound slot. The call must be answered from
-      // what is actually retrieved today, not from training recall.
-      ? 'You HAVE live web access. Search for this company\'s situation AS OF TODAY — recent price ' +
-        'action, latest results, order wins, analyst actions, sector conditions, material news — and ' +
-        'base your judgement on what you genuinely find. Report only what the search actually returns; ' +
-        'if it yields nothing useful, say exactly that rather than filling the gap from memory.\n'
-      // Offline fallback, used once the search pool is spent. Separates stable knowledge from stale
-      // knowledge: what a company DOES is durable (Titan owning Tanishq stays true), what a sector
-      // is DOING is not. With a 2026 date in the prompt the model still produced "Hotels sector
-      // facing challenges due to COVID-19", and "robust demand" reads as present-tense fact while
-      // actually being recall from training data a year or more old.
-      : 'You have NO access to news, earnings releases, analyst actions, prices or current market ' +
-        'events. You MAY use what you know about what the company does — its products, brands and ' +
-        'business model. You must NOT assert current conditions: no claims about present demand, ' +
-        'order books, sector tailwinds or headwinds, recent results, or competitive dynamics. Judge ' +
-        'the durable quality of the business itself and phrase it in those terms.\n') +
+      // Live-market pass
+      ? 'You HAVE live web access. Search for additional material updates AS OF TODAY if relevant, and base your judgement on what you find.\n'
+      // Offline fallback
+      : 'Synthesize the provided news, momentum, and business model into an actionable call as of today. Do not invent unsupplied data.\n') +
     (many ? 'For EACH stock, give:\n' : 'Give:\n') +
     '1. suggestion: exactly one of BUY, HOLD, SELL ON RALLY, EXIT NOW\n' +
-    '2. rationale: ONE brief complete sentence (max 25 words) giving the actual reason for the call, SPECIFIC to this company. No generic filler, and never a sentence that merely restates the sector.\n' +
-    // The 44-label vocabulary is ~18% of every prompt. When every stock in the call already has an
-    // authoritative SECTOR supplied from KNOWN_SECTOR_MAP the model is not choosing from the list,
-    // only echoing what it was given — so the list is dead weight. At batch-of-1 on a single free
-    // provider that saved ~15k input tokens per full run.
+    '2. rationale: ONE brief complete sentence (max 25 words) giving the actual reason/catalyst for the call, SPECIFIC to this company. Synthesize recent news/momentum; DO NOT merely parrot raw PE or percentages back.\n' +
     (batch.every(s => KNOWN_SECTOR_MAP[s])
       ? '3. sector: copy the SECTOR value supplied above for this stock, exactly as written.\n'
       : '3. sector: this company\'s own sector — pick EXACTLY ONE label from this fixed list, copied exactly as written: ' + SECTOR_LIST.join(', ') + '\n') +
