@@ -443,12 +443,17 @@ function makeRow(h, port){
   const inScreener = DATA.screener && DATA.screener.indexOf(h.sym) > -1;
   const scInfo = (DATA.screenerHistory && DATA.screenerHistory[h.sym]) || null;
   let scrObj = null;
-  if (inScreener) {
-    const st = scInfo ? scInfo.status : 'NEW';
-    const sc = scInfo ? scInfo.score : '1/12';
-    scrObj = { active: true, status: st, score: sc };
-  } else if (scInfo && scInfo.status === 'DROPOUT') {
-    scrObj = { active: false, status: 'DROPOUT', score: scInfo.score };
+  if (inScreener || (scInfo && scInfo.status === 'DROPOUT')) {
+    const rawScore = scInfo ? String(scInfo.score || '') : '';
+    const cleanScore = (rawScore && !rawScore.includes('GMT') && /^\d+\/12$/.test(rawScore))
+      ? rawScore
+      : ((scInfo && scInfo.scoreNum != null ? scInfo.scoreNum : 1) + '/12');
+    if (inScreener) {
+      const st = scInfo ? scInfo.status : 'NEW';
+      scrObj = { active: true, status: st, score: cleanScore };
+    } else {
+      scrObj = { active: false, status: 'DROPOUT', score: cleanScore };
+    }
   }
   
   return {

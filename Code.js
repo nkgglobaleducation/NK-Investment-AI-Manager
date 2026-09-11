@@ -285,10 +285,11 @@ function readScreenerHistory_() {
     if (!sym) return;
     let histObj = {};
     try { histObj = JSON.parse(r[5] || '{}'); } catch (e) { histObj = {}; }
+    const scoreNum = Number(r[3]) || 0;
     history[sym] = {
       status: String(r[1] || 'INACTIVE'),
-      score: String(r[2] || '0/12'),
-      scoreNum: Number(r[3]) || 0,
+      score: scoreNum + '/12',
+      scoreNum: scoreNum,
       lastUploaded: String(r[4] || ''),
       cycles: histObj
     };
@@ -345,13 +346,14 @@ function updateScreenerHistory_(uploadedCodes, nowStr) {
       cycles: cyclesObj
     };
 
-    outRows.push([sym, statusTag, scoreStr, scoreNum, lastUp, JSON.stringify(cyclesObj)]);
+    outRows.push([sym, statusTag, "'" + scoreStr, scoreNum, lastUp, JSON.stringify(cyclesObj)]);
   });
 
   const sh = getSheet_(TAB_SCREENER_HISTORY, ['Symbol', 'Status', 'Score12M', 'CyclesPresent', 'LastUploaded', 'CycleHistoryJson']);
   sh.clearContents();
   sh.getRange(1, 1, 1, 6).setValues([['Symbol', 'Status', 'Score12M', 'CyclesPresent', 'LastUploaded', 'CycleHistoryJson']]);
   if (outRows.length) {
+    sh.getRange(2, 3, outRows.length, 1).setNumberFormat('@');
     sh.getRange(2, 1, outRows.length, 6).setValues(outRows);
   }
   return updatedMap;
@@ -656,9 +658,8 @@ function processAIBatch(precomputedPend) {
       try {
         rawResults = analyzeSymbols_(batch, pend.data, true);
       } catch (e) {
-        if (!/exhausted|cooldown|search-capable/i.test(String(e.message || ''))) throw e;
         liveStudy = false;
-        Logger.log('⚠ live-market pool unavailable (' + e.message + ') — offline analysis for ' + batch.join(','));
+        Logger.log('⚠ live-market search pass failed (' + e.message + ') — falling back to offline analysis for ' + batch.join(','));
         rawResults = analyzeSymbols_(batch, pend.data, false);
       }
       Logger.log((liveStudy ? '🌐 live-market' : '📴 offline') + ' analysis: ' + batch.join(','));
@@ -1032,7 +1033,9 @@ function analyzeSymbols_(batch, data, useSearch) {
     }
 
     // Non-HOLD proposed: get the remaining samples and require a majority.
-    const extra = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, AI_VOTE_SAMPLES - 1, useSearch);
+    // Use offline analysis (wantSearch = false) for extra confirmation samples
+    // so we avoid hitting per-minute TPM rate limits on the live web search slot.
+    const extra = aiChatSamples_(prompt, 2200, parseAnalysisResponse_, AI_VOTE_SAMPLES - 1, false);
     const voted = tallyVotes_(first.samples.concat(extra.samples), sym);
     if (voted) out[sym] = voted;
   });
