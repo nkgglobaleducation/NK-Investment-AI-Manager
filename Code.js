@@ -960,10 +960,10 @@ function analyzeSymbols_(batch, data, useSearch) {
     const scInfo = (data.screenerHistory && data.screenerHistory[sym]) || null;
     let scrNote = '';
     if (scInfo) {
-      if (scInfo.status === 'CORE') scrNote = ' | SCREENER: Core compounder (passed ' + scInfo.score + ' monthly cycles)';
-      else if (scInfo.status === 'DROPOUT') scrNote = ' | SCREENER: Recent dropout (passed ' + scInfo.score + ' monthly cycles previously, but missed current cutoff)';
-      else if (scInfo.status === 'REGULAR') scrNote = ' | SCREENER: Regular qualification (' + scInfo.score + ' monthly cycles)';
-      else if (scInfo.status === 'NEW') scrNote = ' | SCREENER: Newly qualified (' + scInfo.score + ' monthly cycles)';
+      if (scInfo.status === 'CORE') scrNote = ' | SCREENER: Core compounder (qualified in ' + scInfo.score + ' monthly cycles)';
+      else if (scInfo.status === 'DROPOUT') scrNote = ' | SCREENER: Recent dropout (passed ' + scInfo.score + ' monthly cycles previously, missed this cutoff)';
+      else if (scInfo.status === 'REGULAR') scrNote = ' | SCREENER: Regular qualification (' + scInfo.score + ' monthly cycles tracked)';
+      else if (scInfo.status === 'NEW') scrNote = ' | SCREENER: Newly added to tracking this month (' + scInfo.score + ' cycles tracked — baseline month, NOT a sign of past failure)';
     }
 
     // Price momentum & valuation signals
@@ -981,7 +981,7 @@ function analyzeSymbols_(batch, data, useSearch) {
 
   const many = batch.length > 1;
   const prompt =
-    'You are an Indian equity analyst. Today is ' + new Date().toDateString() + '.\n' +
+    'You are an Indian equity analyst. Today is ' + new Date().toDateString() + ' (Indian Fiscal Year FY2026-27 / FY27).\n' +
     (many
       ? 'Below are ' + batch.length + ' completely INDEPENDENT NSE stocks, each numbered and on its own line. ' +
         'Treat each one as a separate, isolated analysis — do not let the sector, business, or news context of one ' +
@@ -989,8 +989,11 @@ function analyzeSymbols_(batch, data, useSearch) {
         'confirm your rationale/alternate actually describes THAT company\'s real business, not a neighboring one. '
       : 'Below is ONE NSE stock. Analyse only this company. Before answering, re-read its SYMBOL and confirm your ' +
         'rationale and alternate describe THAT company\'s real business. ') +
-    'You are provided with company identity, sector, screener 12-month consistency, price momentum, and verified recent news developments as of today.\n' +
-    'Base your evaluation on business fundamentals, market trend/momentum, and news catalysts. If the stock is a screener dropout, evaluate whether the drop reflects temporary noise or deteriorating fundamentals.\n' +
+    'You are provided with company identity, sector, screener 12-month tracking status, price momentum, and verified recent news developments.\n' +
+    'Base your evaluation on real business fundamentals, price momentum, and verified news catalysts. Follow these STRICT guidelines:\n' +
+    'A. SCREENER TRACKING SEMANTICS: "1/12" or "NEW" simply means the user started tracking this stock this month in their software. It does NOT mean the company failed 11 months or has poor business consistency! NEVER cite "only 1/12 qualified" or "poor screener consistency" as a justification to sell or exit.\n' +
+    'B. FACTUAL INTEGRITY & ZERO HALLUCINATION: Never invent corporate actions (no fictional mergers, acquisitions, or demergers). Never confuse separate listed companies (e.g. Happiest Minds is an independent listed firm and NOT merged with ITC). Never make false debt claims (cash-rich or debt-free bluechips like Ambuja Cements, TCS, Infosys, ITC must NEVER be claimed as high-debt).\n' +
+    'C. EARNINGS & CATALYSTS: Refer accurately to recent quarterly results (Q1 FY27 / Q4 FY26). When recommending EXIT NOW or SELL ON RALLY, justify using genuine fundamental deterioration, extreme valuation, or unmanageable debt.\n' +
     (useSearch
       // Live-market pass
       ? 'You HAVE live web access. Search for additional material updates AS OF TODAY if relevant, and base your judgement on what you find.\n'
@@ -1003,7 +1006,7 @@ function analyzeSymbols_(batch, data, useSearch) {
       ? '3. sector: copy the SECTOR value supplied above for this stock, exactly as written.\n'
       : '3. sector: this company\'s own sector — pick EXACTLY ONE label from this fixed list, copied exactly as written: ' + SECTOR_LIST.join(', ') + '\n') +
     '4. alternate: ONLY for EXIT NOW / SELL ON RALLY. Must be a REAL NSE-listed company\'s exact ticker symbol, from ' +
-    'the EXACT SAME sector as this stock (e.g. SYRMA for DIXON — both EMS; INFY for TCS — both IT Services). ' +
+    'the EXACT SAME sector as this stock (e.g. POLYCAB for HAVELLS/CGPOWER; HINDUNILVR for NESTLEIND; MARUTI for OLAELEC; NTPC for RPOWER/RELINFRA; HDFCLIFE for SBILIFE; THERMAX for TRITURBINE; INFY for TCS/LTM; SYRMA for DIXON). ' +
     'Only use a ticker you are genuinely confident is real and currently listed — never invent a plausible-sounding ' +
     'name or generic term (e.g. "BLUECHIP" is not a company). If you cannot name a genuinely same-sector, real, ' +
     'listed stock that is a clear improvement, output "" — an empty string is far better than a wrong or invented guess. ' +
@@ -1291,13 +1294,15 @@ function tidyRationale_(rationale, altWasRemoved) {
   const orig = String(rationale || '').trim();
   let r = orig;
   if (altWasRemoved) r = r.replace(ALT_REFERENCE_CLAUSE, '');
+  // Scrub any stray mentions of software screener tracking cycles (e.g. "only 1/12 qualified")
+  r = r.replace(/[,;]?\s*(?:and\s+)?(?:only\s+)?\d+\/12\s*(?:monthly\s+)?(?:cycles?\s+)?(?:qualified|consistency)?[^,;.]*/gi, '');
   // Stripping one trailing connector can expose another, so trim repeatedly (bounded).
   for (let i = 0; i < 3; i++) {
     const next = r.replace(DANGLING_TAIL, '');
     if (next === r) break;
     r = next;
   }
-  r = r.replace(/[\s,;:]+$/, '');
+  r = r.replace(/^[\s,;:]+/, '').replace(/[\s,;:]+$/, '');
   if (r !== orig && r && !/[.!?]$/.test(r)) r += '.';   // only punctuate what we actually edited
   return r || orig;                                      // never return an empty rationale
 }
@@ -1715,21 +1720,39 @@ function tallyVotes_(samples, sym) {
   const winners = entries.filter(e => e.suggestion === winner);
   const lead = winners[0];
 
-  // Strict ALT: every majority sample must name the same non-empty ticker.
-  const alts = winners.map(e => normalizeTicker_(e.alternate));
-  const altAgreed = alts[0] && alts.every(a => a === alts[0]);
-  if (!altAgreed && alts.some(a => a)) bumpVoteStat_('altDropped');
+  // Resolve best non-empty ALT proposed by majority winners
+  let chosenAlt = '';
+  let chosenAltSector = '';
+  const validAltEntries = winners.filter(e => {
+    const t = normalizeTicker_(e.alternate);
+    return t && isPlausibleTicker_(t) && GENERIC_NONTICKER_TERMS.indexOf(t) === -1 && KNOWN_INVALID_TICKERS.indexOf(t) === -1;
+  });
+
+  if (validAltEntries.length) {
+    const counts = {};
+    validAltEntries.forEach(e => {
+      const t = normalizeTicker_(e.alternate);
+      counts[t] = (counts[t] || 0) + 1;
+    });
+    // Sort candidate tickers: highest vote count first, then lead sample's candidate
+    validAltEntries.sort((a, b) => {
+      const ta = normalizeTicker_(a.alternate), tb = normalizeTicker_(b.alternate);
+      return counts[tb] - counts[ta];
+    });
+    chosenAlt = normalizeTicker_(validAltEntries[0].alternate);
+    chosenAltSector = validAltEntries[0].altSector || lead.altSector || '';
+  }
 
   bumpVoteStat_(top === entries.length ? 'unanimous' : 'majority');
   Logger.log('🗳 ' + sym + ': [' + cast + '] -> ' + winner + ' (' + top + '/' + entries.length + ')' +
-    (alts.some(a => a) ? (altAgreed ? ' ALT ' + alts[0] : ' ALT dropped (samples disagreed)') : ''));
+    (chosenAlt ? (' ALT ' + chosenAlt) : ' (no ALT)'));
 
   return {
     suggestion: winner,
     rationale: lead.rationale,
     sector: lead.sector || '',
-    alternate: altAgreed ? alts[0] : '',
-    altSector: altAgreed ? lead.altSector : ''
+    alternate: chosenAlt,
+    altSector: chosenAltSector
   };
 }
 
