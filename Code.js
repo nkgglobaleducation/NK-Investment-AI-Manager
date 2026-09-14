@@ -323,10 +323,16 @@ function updateScreenerHistory_(uploadedCodes, nowStr) {
 
     let scoreNum = 0;
     curCycles.forEach(c => { if (cyclesObj[c]) scoreNum++; });
-    const scoreStr = scoreNum + '/12';
+    let scoreStr = scoreNum + '/12';
 
     let statusTag = 'INACTIVE';
-    if (isUploaded) {
+    if (isEtf_(sym)) {
+      // Uploaded ETFs are permanently screened: full 12/12 score, never drop out
+      statusTag = 'ETF';
+      scoreNum = 12;
+      scoreStr = '12/12';
+      curCycles.forEach(c => { cyclesObj[c] = 1; });
+    } else if (isUploaded) {
       if (scoreNum >= 6) statusTag = 'CORE';
       else if (scoreNum >= 3) statusTag = 'REGULAR';
       else statusTag = 'NEW';
@@ -432,6 +438,18 @@ function getInitialData() {
   const p2 = readTab_(TAB_P2).map(r => ({ sym: String(r[0]), qty: Number(r[1]), avg: Number(r[2]) }));
   const screener = readTab_(TAB_SCREENER).map(r => String(r[0])).filter(Boolean);
   const screenerHistory = readScreenerHistory_();
+
+  // Any ETF uploaded in P1, P2, or Screener history is permanently screened
+  p1.concat(p2).forEach(h => {
+    if (isEtf_(h.sym) && screener.indexOf(h.sym) === -1) {
+      screener.push(h.sym);
+    }
+  });
+  Object.keys(screenerHistory).forEach(s => {
+    if (isEtf_(s) && screener.indexOf(s) === -1) {
+      screener.push(s);
+    }
+  });
 
   const prices = {};
   readTab_(TAB_PRICES).forEach(r => {
@@ -594,7 +612,7 @@ function uniqueSymbols_(data) {
   data.screener.forEach(s => set[s] = 1);
   if (data.screenerHistory) {
     Object.keys(data.screenerHistory).forEach(s => {
-      if (data.screenerHistory[s] && data.screenerHistory[s].status === 'DROPOUT') set[s] = 1;
+      if (data.screenerHistory[s] && (data.screenerHistory[s].status === 'DROPOUT' || data.screenerHistory[s].status === 'ETF')) set[s] = 1;
     });
   }
   return Object.keys(set);
@@ -723,6 +741,7 @@ function analysisOrder_(data) {
   if (data.screenerHistory) {
     Object.keys(data.screenerHistory).forEach(s => {
       if (data.screenerHistory[s] && data.screenerHistory[s].status === 'DROPOUT') isDropout[s] = 1;
+      if (data.screenerHistory[s] && data.screenerHistory[s].status === 'ETF') inScreener[s] = 1;
     });
   }
   return function (a, b) {
@@ -944,11 +963,14 @@ const SCREENER_DESCRIPTION =
 function analyzeSymbols_(batch, data, useSearch) {
   const ctx = batch.map((sym, i) => {
     const pr = data.prices[sym] || {};
+    const isEtf = isEtf_(sym);
     // KNOWN_SECTOR_MAP ground truth goes INTO the prompt, not just used as a post-check.
-    const known = KNOWN_SECTOR_MAP[sym];
+    const known = isEtf ? 'Index / Commodity ETF' : KNOWN_SECTOR_MAP[sym];
     const sectorNote = known ? ' | SECTOR (authoritative — use this, do not infer your own): ' + known : '';
     // A hint BEATS the Company column.
-    const hint = SYMBOL_CONTEXT_HINTS[sym];
+    const hint = isEtf
+      ? 'Exchange Traded Fund (ETF) tracking underlying benchmark index or physical commodity — not an individual corporate equity.'
+      : SYMBOL_CONTEXT_HINTS[sym];
     const identity = hint ? ' | NOTE: ' + hint
                           : (pr.name ? ' | COMPANY: ' + pr.name : '');
 
@@ -959,7 +981,9 @@ function analyzeSymbols_(batch, data, useSearch) {
     // Screener 12-month consistency status
     const scInfo = (data.screenerHistory && data.screenerHistory[sym]) || null;
     let scrNote = '';
-    if (scInfo) {
+    if (isEtf) {
+      scrNote = ' | SCREENER: Permanently screened core ETF (Index/Commodity allocation)';
+    } else if (scInfo) {
       if (scInfo.status === 'CORE') scrNote = ' | SCREENER: Core compounder (qualified in ' + scInfo.score + ' monthly cycles)';
       else if (scInfo.status === 'DROPOUT') scrNote = ' | SCREENER: Recent dropout (passed ' + scInfo.score + ' monthly cycles previously, missed this cutoff)';
       else if (scInfo.status === 'REGULAR') scrNote = ' | SCREENER: Regular qualification (' + scInfo.score + ' monthly cycles tracked)';
@@ -1161,11 +1185,15 @@ const KNOWN_INVALID_TICKERS = [
 // manufacturer, unrelated to solar energy or funds). So: pattern-match the safe suffix, and keep
 // an explicit, manually-verified list for everything else. UPDATE THIS LIST if a new ETF/fund
 // is added to P1/P2/Screener — a missed one silently falls back to the 'Other'-bucket gap.
-const KNOWN_ETF_SYMBOLS = ['GOLDBEES', 'MAFANG', 'UTIGOLD'];
+const KNOWN_ETF_SYMBOLS = [
+  'NIFTYBEES', 'JUNIORBEES', 'MID150BEES', 'GOLDBEES', 'MON100', 'MONQ50', 'MAFANG', 'UTIGOLD',
+  'SILVERBEES', 'BANKBEES', 'ITBEES', 'PHARMABEES', 'AUTOBEES', 'CPSEETF', 'MOM100', 'MOM30',
+  'HDFCNIFETF', 'ICICINIFTY', 'SETFNIF50'
+];
 
 function isEtf_(sym) {
   const s = normalizeTicker_(sym);
-  return /BEES$/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1;
+  return /BEES$|ETF$/.test(s) || /^MON\d+/.test(s) || /^MONQ\d+/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1;
 }
 
 // Observed phrasing keeps varying run to run ("LTP is not available", "price is not available",
