@@ -153,11 +153,20 @@
 
     <div class="side-card">
       <h3>🎯 SCREENER STOCKS</h3>
-      <label>Screener CSV (NSE codes)</label>
-      <input type="file" id="fileScr" accept=".csv">
-      <div class="side-note" id="noteScr">No data yet</div>
-      <div class="side-note hidden" id="staleScrWarn" style="color:#ff8e8e;font-weight:700;margin-top:4px"></div>
-      <button class="btn btn-load" id="btnScr" onclick="loadScreener()">📂 Load Screener CSV</button>
+      <label>1. Compounder Screener</label>
+      <input type="file" id="fileScrCmp" accept=".csv">
+      <div class="side-note" id="noteScrCmp">No data yet</div>
+
+      <label style="margin-top:8px">2. Quality Screener</label>
+      <input type="file" id="fileScrQlt" accept=".csv">
+      <div class="side-note" id="noteScrQlt">No data yet</div>
+
+      <label style="margin-top:8px">3. Multibagger Screener</label>
+      <input type="file" id="fileScrMb" accept=".csv">
+      <div class="side-note" id="noteScrMb">No data yet</div>
+
+      <div class="side-note hidden" id="staleScrWarn" style="color:#ff8e8e;font-weight:700;margin-top:6px"></div>
+      <button class="btn btn-load" id="btnScr" onclick="loadAllScreeners()" style="margin-top:8px">📂 Load Screeners</button>
     </div>
 
     <div class="side-card">
@@ -309,7 +318,7 @@ const FILTER_GROUPS = {
   // Own group, so these AND with the others (Screener + Buy = buy-rated screener stocks).
   // SCRN and NOTSCRN sit in the SAME group, so selecting both OR's back to everything — the same
   // way P1 + P2 + Not held does.
-  SCRN:'scrn', CORE:'scrn', DROPOUT:'scrn', NOTSCRN:'scrn',
+  SCRN:'scrn', SCRN_CMP:'scrn', SCRN_QLT:'scrn', SCRN_MB:'scrn', CORE:'scrn', DROPOUT:'scrn', NOTSCRN:'scrn',
   ETF:'asset',
   WATCH:'watch'
 };
@@ -367,7 +376,15 @@ function updateNotes(){
   const m = DATA.meta || {};
   note('noteP1',  DATA.p1.length,  m.p1Saved);
   note('noteP2',  DATA.p2.length,  m.p2Saved);
-  note('noteScr', DATA.screener.length, m.screenerSaved);
+
+  const scrs = DATA.screeners || {};
+  const cmpLen = (scrs.compounder && scrs.compounder.length) || (DATA.screener ? DATA.screener.length : 0);
+  const qltLen = (scrs.quality && scrs.quality.length) || 0;
+  const mbLen  = (scrs.multibagger && scrs.multibagger.length) || 0;
+
+  note('noteScrCmp', cmpLen, m.screenerCmpSaved || m.screenerSaved);
+  note('noteScrQlt', qltLen, m.screenerQltSaved);
+  note('noteScrMb',  mbLen,  m.screenerMbSaved);
 
   // Check if Screener CSV is more than 30 days old as on 15th of Month
   const ts = m.screenerSavedTs;
@@ -452,14 +469,18 @@ function makeRow(h, port){
   // %Low w.r.t all time high: ((AllTimeHigh - LTP) / AllTimeHigh) * 100
   const lowATHPct = (allTimeHigh > 0 && ltp > 0) ? ((allTimeHigh - ltp) / allTimeHigh * 100) : 0;
 
-  // Screener 12-month status
+  // Screener 12-month status & screener membership
   const etf = isEtf(h.sym);
-  const inScreener = etf || (DATA.screener && DATA.screener.indexOf(h.sym) > -1);
+  const scrs = DATA.screeners || {};
+  const inCmp = (scrs.compounder && scrs.compounder.indexOf(h.sym) > -1) || false;
+  const inQlt = (scrs.quality && scrs.quality.indexOf(h.sym) > -1) || false;
+  const inMb  = (scrs.multibagger && scrs.multibagger.indexOf(h.sym) > -1) || false;
+  const inScreener = etf || inCmp || inQlt || inMb || (DATA.screener && DATA.screener.indexOf(h.sym) > -1);
   const scInfo = (DATA.screenerHistory && DATA.screenerHistory[h.sym]) || null;
   let scrObj = null;
   if (etf) {
     // Uploaded ETFs are permanently screened
-    scrObj = { active: true, status: 'ETF', score: '12/12' };
+    scrObj = { active: true, status: 'ETF', score: '12/12', cmp: inCmp, qlt: inQlt, mb: inMb };
   } else if (inScreener || (scInfo && scInfo.status === 'DROPOUT')) {
     const rawScore = scInfo ? String(scInfo.score || '') : '';
     const cleanScore = (rawScore && !rawScore.includes('GMT') && /^\d+\/12$/.test(rawScore))
@@ -467,9 +488,9 @@ function makeRow(h, port){
       : ((scInfo && scInfo.scoreNum != null ? scInfo.scoreNum : 1) + '/12');
     if (inScreener) {
       const st = scInfo ? scInfo.status : 'NEW';
-      scrObj = { active: true, status: st, score: cleanScore };
+      scrObj = { active: true, status: st, score: cleanScore, cmp: inCmp, qlt: inQlt, mb: inMb };
     } else {
-      scrObj = { active: false, status: 'DROPOUT', score: cleanScore };
+      scrObj = { active: false, status: 'DROPOUT', score: cleanScore, cmp: inCmp, qlt: inQlt, mb: inMb };
     }
   }
   
@@ -537,37 +558,77 @@ function renderScrBadge(scr){
   if (scr.status === 'ETF') {
     return '<span class="badge b-buy" style="font-size:9px" title="Permanently Screened ETF (Core Index/Commodity Asset)">✓ ETF</span>';
   }
-  if (scr.status === 'CORE') {
-    return '<span class="badge b-buy" style="font-size:9px" title="Core Compounder: passed ' + scr.score + ' monthly cycles">✓ ' + scr.score + '</span>';
-  }
-  if (scr.status === 'REGULAR') {
-    return '<span class="badge b-hold" style="font-size:9px" title="Regular Screener: passed ' + scr.score + ' monthly cycles">✓ ' + scr.score + '</span>';
-  }
-  if (scr.status === 'NEW') {
-    return '<span class="badge b-rally" style="font-size:9px" title="New Entrant: ' + scr.score + ' monthly cycles">✓ NEW</span>';
-  }
   if (scr.status === 'DROPOUT') {
     return '<span class="badge b-exit" style="font-size:9px" title="Recent Dropout: passed ' + scr.score + ' monthly cycles previously, but missed current cutoff">⚠ DROP</span>';
   }
-  return '<span class="b-none">—</span>';
+
+  // Determine label and style based on screener qualifications
+  const names = [];
+  if (scr.cmp) names.push('Compounder');
+  if (scr.qlt) names.push('Quality');
+  if (scr.mb)  names.push('Multibagger');
+
+  let label = '';
+  let bClass = 'b-buy';
+  if (scr.cmp && scr.qlt && scr.mb) {
+    label = '✓ ALL';
+    bClass = 'b-buy';
+  } else if (scr.cmp && scr.qlt) {
+    label = '✓ C+Q';
+    bClass = 'b-buy';
+  } else if (scr.cmp && scr.mb) {
+    label = '✓ C+M';
+    bClass = 'b-buy';
+  } else if (scr.qlt && scr.mb) {
+    label = '✓ Q+M';
+    bClass = 'b-buy';
+  } else if (scr.cmp) {
+    label = '✓ CMP';
+    bClass = 'b-buy';
+  } else if (scr.qlt) {
+    label = '✓ QLT';
+    bClass = 'b-hold';
+  } else if (scr.mb) {
+    label = '✓ MB';
+    bClass = 'b-rally';
+  } else {
+    // Fallback if individual flags are empty or legacy
+    if (scr.status === 'CORE') {
+      label = '✓ ' + scr.score;
+      bClass = 'b-buy';
+    } else if (scr.status === 'NEW') {
+      label = '✓ NEW';
+      bClass = 'b-rally';
+    } else {
+      label = '✓ ' + (scr.score || 'SCR');
+      bClass = 'b-hold';
+    }
+  }
+
+  const passedStr = names.length ? ('Passed: ' + names.join(', ')) : 'Screened Stock';
+  const tip = passedStr + ' | 12M Consistency: ' + (scr.score || '—');
+  return '<span class="badge ' + bClass + '" style="font-size:9px" title="' + tip + '">' + label + '</span>';
 }
 
 function matchChip(key, r){
   switch(key){
-    case 'EXIT':    return r.sug==='EXIT NOW';
-    case 'RALLY':   return r.sug==='SELL ON RALLY';
-    case 'BUY':     return r.sug==='BUY';
-    case 'HOLD':    return r.sug==='HOLD';
-    case 'PENDING': return !r.sug;
-    case 'P1':      return r.port==='P1';
-    case 'P2':      return r.port==='P2';
-    case 'NOTHELD': return !r.port;
-    case 'SCRN':    return !!(r.scr && r.scr.active);
-    case 'CORE':    return !!(r.scr && (r.scr.status === 'CORE' || r.scr.status === 'ETF'));
-    case 'DROPOUT': return !!(r.scr && r.scr.status === 'DROPOUT');
-    case 'NOTSCRN': return !(r.scr && r.scr.active);
-    case 'ETF':     return isEtf(r.sym);
-    case 'WATCH':   return DATA.watchlist.indexOf(r.sym)>-1;
+    case 'EXIT':     return r.sug==='EXIT NOW';
+    case 'RALLY':    return r.sug==='SELL ON RALLY';
+    case 'BUY':      return r.sug==='BUY';
+    case 'HOLD':     return r.sug==='HOLD';
+    case 'PENDING':  return !r.sug;
+    case 'P1':       return r.port==='P1';
+    case 'P2':       return r.port==='P2';
+    case 'NOTHELD':  return !r.port;
+    case 'SCRN':     return !!(r.scr && r.scr.active);
+    case 'SCRN_CMP': return !!(r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && !r.scr.mb && r.scr.status !== 'ETF')));
+    case 'SCRN_QLT': return !!(r.scr && r.scr.qlt);
+    case 'SCRN_MB':  return !!(r.scr && r.scr.mb);
+    case 'CORE':     return !!(r.scr && (r.scr.status === 'CORE' || r.scr.status === 'ETF'));
+    case 'DROPOUT':  return !!(r.scr && r.scr.status === 'DROPOUT');
+    case 'NOTSCRN':  return !(r.scr && r.scr.active);
+    case 'ETF':      return isEtf(r.sym);
+    case 'WATCH':    return DATA.watchlist.indexOf(r.sym)>-1;
   }
   return true;
 }
@@ -594,6 +655,9 @@ function renderFilters(){
     P2: ROWS.filter(r=>r.port==='P2').length,
     NOTHELD: ROWS.filter(r=>!r.port).length,
     SCRN: ROWS.filter(r=>r.scr && r.scr.active).length,
+    SCRN_CMP: ROWS.filter(r=>r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && !r.scr.mb && r.scr.status !== 'ETF'))).length,
+    SCRN_QLT: ROWS.filter(r=>r.scr && r.scr.qlt).length,
+    SCRN_MB: ROWS.filter(r=>r.scr && r.scr.mb).length,
     CORE: ROWS.filter(r=>r.scr && (r.scr.status === 'CORE' || r.scr.status === 'ETF')).length,
     DROPOUT: ROWS.filter(r=>r.scr && r.scr.status === 'DROPOUT').length,
     NOTSCRN: ROWS.filter(r=>!r.scr || !r.scr.active).length,
@@ -603,7 +667,9 @@ function renderFilters(){
   const defs = [
     ['ALL','All'],['EXIT','Exit now'],['RALLY','Sell on rally'],['BUY','Buy'],
     ['HOLD','Hold'],['PENDING','Pending'],['P1','P1'],['P2','P2'],
-    ['NOTHELD','Not held'],['SCRN','Screener'],['CORE','Core 12M'],['DROPOUT','Dropouts'],['NOTSCRN','Non-screener'],
+    ['NOTHELD','Not held'],
+    ['SCRN','All Screeners'],['SCRN_CMP','Compounder'],['SCRN_QLT','Quality'],['SCRN_MB','Multibagger'],
+    ['CORE','Core 12M'],['DROPOUT','Dropouts'],['NOTSCRN','Non-screener'],
     ['ETF','ETFs'],['WATCH','Watchlist']
   ];
   const anySelected = Object.keys(activeFilters).length > 0;
@@ -737,15 +803,51 @@ function loadFiles(){
   });
 }
 
-function loadScreener(){
-  readFile(document.getElementById('fileScr'), t=>{
-    if(!t){ setStatus('Select the screener CSV first.'); return; }
-    const b=document.getElementById('btnScr'); b.disabled=true;
-    google.script.run.withSuccessHandler(()=>{b.disabled=false; reload();})
-      .withFailureHandler(e=>{b.disabled=false; setStatus('⚠ '+e.message);})
-      .uploadCSV('SCREENER', t);
+function loadAllScreeners(){
+  const fCmp = document.getElementById('fileScrCmp');
+  const fQlt = document.getElementById('fileScrQlt');
+  const fMb  = document.getElementById('fileScrMb');
+  const b = document.getElementById('btnScr');
+  b.disabled = true;
+
+  let pending = 0;
+  const doneOne = () => {
+    if (--pending <= 0) {
+      b.disabled = false;
+      reload();
+    }
+  };
+
+  readFile(fCmp, t => {
+    if (t) {
+      pending++;
+      google.script.run.withSuccessHandler(doneOne)
+        .withFailureHandler(e => { setStatus('⚠ Compounder: ' + e.message); doneOne(); })
+        .uploadCSV('SCREENER_COMPOUNDER', t);
+    }
+    readFile(fQlt, t2 => {
+      if (t2) {
+        pending++;
+        google.script.run.withSuccessHandler(doneOne)
+          .withFailureHandler(e => { setStatus('⚠ Quality: ' + e.message); doneOne(); })
+          .uploadCSV('SCREENER_QUALITY', t2);
+      }
+      readFile(fMb, t3 => {
+        if (t3) {
+          pending++;
+          google.script.run.withSuccessHandler(doneOne)
+            .withFailureHandler(e => { setStatus('⚠ Multibagger: ' + e.message); doneOne(); })
+            .uploadCSV('SCREENER_MULTIBAGGER', t3);
+        }
+        if (!pending) {
+          b.disabled = false;
+          setStatus('Select at least one Screener CSV file to load.');
+        }
+      });
+    });
   });
 }
+function loadScreener(){ loadAllScreeners(); }
 
 function reload(){
   google.script.run.withSuccessHandler(d=>{

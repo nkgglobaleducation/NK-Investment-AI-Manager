@@ -14,11 +14,14 @@
 
 const SHEET_ID = '1i-yJx4H3PUKhaADvxDPJIVV3Z4gmPtjdGbuejQwWpCw';
 
-const TAB_P1               = 'P1_Holdings';
-const TAB_P2               = 'P2_Holdings';
-const TAB_SCREENER         = 'Screener';
-const TAB_SCREENER_HISTORY = 'Screener_History';
-const TAB_PRICES           = 'LivePrices';
+const TAB_P1                    = 'P1_Holdings';
+const TAB_P2                    = 'P2_Holdings';
+const TAB_SCREENER              = 'Screener'; // Legacy / union fallback
+const TAB_SCREENER_COMPOUNDER   = 'Screener_Compounder';
+const TAB_SCREENER_QUALITY      = 'Screener_Quality';
+const TAB_SCREENER_MULTIBAGGER  = 'Screener_Multibagger';
+const TAB_SCREENER_HISTORY      = 'Screener_History';
+const TAB_PRICES                = 'LivePrices';
 const TAB_AI               = 'AI_Analysis';
 const TAB_INDICES          = 'Indices';
 // Scratch tab used only to probe whether a proposed ALT ticker actually exists (see
@@ -187,29 +190,47 @@ function uploadCSV(type, csvText) {
   if (!rows || rows.length < 2) throw new Error('CSV appears empty.');
   const now = nowIST_();
 
-  if (type === 'SCREENER') {
+  if (type === 'SCREENER' || type === 'SCREENER_COMPOUNDER' || type === 'SCREENER_QUALITY' || type === 'SCREENER_MULTIBAGGER') {
     const codes = [];
     for (let i = 1; i < rows.length; i++) {
-      const c = String(rows[i][0] || '').trim();
+      const c = String(rows[i][0] || '').trim().toUpperCase();
       if (c) codes.push(c);
     }
+    const tabName = (type === 'SCREENER_QUALITY') ? TAB_SCREENER_QUALITY
+                  : (type === 'SCREENER_MULTIBAGGER') ? TAB_SCREENER_MULTIBAGGER
+                  : TAB_SCREENER_COMPOUNDER;
+    const metaKey = (type === 'SCREENER_QUALITY') ? 'SCREENER_QUALITY'
+                  : (type === 'SCREENER_MULTIBAGGER') ? 'SCREENER_MULTIBAGGER'
+                  : 'SCREENER_COMPOUNDER';
+
     // Lock only the sheet write — CSV parsing above is in-memory and needs no exclusivity.
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(10000)) throw new Error('Another upload is in progress — try again in a moment.');
     try {
-      const sh = getSheet_(TAB_SCREENER, ['NSE_Code']);
+      const sh = getSheet_(tabName, ['NSE_Code']);
       sh.clearContents();
       sh.getRange(1, 1).setValue('NSE_Code');
       if (codes.length) sh.getRange(2, 1, codes.length, 1).setValues(codes.map(c => [c]));
-      
-      // Update 12-month rolling history anchored on the 15th
-      updateScreenerHistory_(codes, now);
+
+      // If updating Compounder or legacy, also keep TAB_SCREENER in sync for backward compatibility
+      if (tabName === TAB_SCREENER_COMPOUNDER) {
+        const legacySh = getSheet_(TAB_SCREENER, ['NSE_Code']);
+        legacySh.clearContents();
+        legacySh.getRange(1, 1).setValue('NSE_Code');
+        if (codes.length) legacySh.getRange(2, 1, codes.length, 1).setValues(codes.map(c => [c]));
+      }
+
+      setMeta_(metaKey + '_SAVED', now);
       setMeta_('SCREENER_SAVED', now);
       setMeta_('SCREENER_SAVED_TS', String(Date.now()));
+
+      // Update 12-month rolling history with all currently screened symbols
+      const allCodes = getAllScreenedSymbols_();
+      updateScreenerHistory_(allCodes, now);
     } finally {
       lock.releaseLock();
     }
-    return { count: codes.length, saved: now };
+    return { count: codes.length, saved: now, type: type };
   }
 
   const header = rows[0].map(h => String(h).toLowerCase());
@@ -239,6 +260,26 @@ function uploadCSV(type, csvText) {
     lock.releaseLock();
   }
   return { count: data.length, saved: now };
+}
+
+function getAllScreenedSymbols_() {
+  const set = {};
+  const tCmp = readTab_(TAB_SCREENER_COMPOUNDER);
+  const tLegacy = tCmp.length ? [] : readTab_(TAB_SCREENER);
+  const tQlt = readTab_(TAB_SCREENER_QUALITY);
+  const tMb = readTab_(TAB_SCREENER_MULTIBAGGER);
+
+  tCmp.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
+  tLegacy.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
+  tQlt.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
+  tMb.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
+
+  // Include any ETFs in P1 or P2
+  readTab_(TAB_P1).concat(readTab_(TAB_P2)).forEach(r => {
+    if (r[0] && isEtf_(String(r[0]))) set[String(r[0]).trim().toUpperCase()] = 1;
+  });
+
+  return Object.keys(set);
 }
 
 /* ====================== SCREENER 12-MONTH HISTORY & CUT-OFF (15th) ====================== */
@@ -436,20 +477,31 @@ function readIndices_() {
 function getInitialData() {
   const p1 = readTab_(TAB_P1).map(r => ({ sym: String(r[0]), qty: Number(r[1]), avg: Number(r[2]) }));
   const p2 = readTab_(TAB_P2).map(r => ({ sym: String(r[0]), qty: Number(r[1]), avg: Number(r[2]) }));
-  const screener = readTab_(TAB_SCREENER).map(r => String(r[0])).filter(Boolean);
+
+  // Read the 3 screeners
+  const scrCmpRaw = readTab_(TAB_SCREENER_COMPOUNDER);
+  // If Screener_Compounder is empty, fallback to legacy Screener tab
+  const scrCmp = (scrCmpRaw.length ? scrCmpRaw : readTab_(TAB_SCREENER)).map(r => String(r[0])).filter(Boolean);
+  const scrQlt = readTab_(TAB_SCREENER_QUALITY).map(r => String(r[0])).filter(Boolean);
+  const scrMb  = readTab_(TAB_SCREENER_MULTIBAGGER).map(r => String(r[0])).filter(Boolean);
+
+  // Union screener array for backward compatibility & price/AI pipelines
+  const allMap = {};
+  scrCmp.forEach(s => allMap[s] = 1);
+  scrQlt.forEach(s => allMap[s] = 1);
+  scrMb.forEach(s => allMap[s] = 1);
+
   const screenerHistory = readScreenerHistory_();
 
   // Any ETF uploaded in P1, P2, or Screener history is permanently screened
   p1.concat(p2).forEach(h => {
-    if (isEtf_(h.sym) && screener.indexOf(h.sym) === -1) {
-      screener.push(h.sym);
-    }
+    if (isEtf_(h.sym)) allMap[h.sym] = 1;
   });
   Object.keys(screenerHistory).forEach(s => {
-    if (isEtf_(s) && screener.indexOf(s) === -1) {
-      screener.push(s);
-    }
+    if (isEtf_(s)) allMap[s] = 1;
   });
+
+  const screener = Object.keys(allMap);
 
   const prices = {};
   readTab_(TAB_PRICES).forEach(r => {
@@ -474,12 +526,22 @@ function getInitialData() {
   const ai = readAI_();
 
   return {
-    p1: p1, p2: p2, screener: screener, screenerHistory: screenerHistory,
+    p1: p1, p2: p2,
+    screener: screener,
+    screeners: {
+      compounder: scrCmp,
+      quality: scrQlt,
+      multibagger: scrMb
+    },
+    screenerHistory: screenerHistory,
     prices: prices, ai: ai, watchlist: watchlist, indices: readIndices_(),
     meta: {
       p1Saved: getMeta_('P1_SAVED'), p2Saved: getMeta_('P2_SAVED'),
       screenerSaved: getMeta_('SCREENER_SAVED'),
       screenerSavedTs: Number(getMeta_('SCREENER_SAVED_TS') || 0),
+      screenerCmpSaved: getMeta_('SCREENER_COMPOUNDER_SAVED') || getMeta_('SCREENER_SAVED'),
+      screenerQltSaved: getMeta_('SCREENER_QUALITY_SAVED'),
+      screenerMbSaved: getMeta_('SCREENER_MULTIBAGGER_SAVED'),
       pricesSaved: getMeta_('PRICES_SAVED'), aiSaved: getMeta_('AI_SAVED')
     },
     keys: getKeyStatus(),
@@ -981,13 +1043,23 @@ function analyzeSymbols_(batch, data, useSearch) {
     // Screener 12-month consistency status
     const scInfo = (data.screenerHistory && data.screenerHistory[sym]) || null;
     let scrNote = '';
+    const scrTags = [];
+    if (data.screeners) {
+      if ((data.screeners.compounder || []).indexOf(sym) !== -1) scrTags.push('Compounder');
+      if ((data.screeners.quality || []).indexOf(sym) !== -1) scrTags.push('Quality');
+      if ((data.screeners.multibagger || []).indexOf(sym) !== -1) scrTags.push('Multibagger');
+    }
+    const scrTagsStr = scrTags.length ? (' [Screeners passed: ' + scrTags.join(', ') + ']') : '';
+
     if (isEtf) {
-      scrNote = ' | SCREENER: Permanently screened core ETF (Index/Commodity allocation)';
+      scrNote = ' | SCREENER: Permanently screened core ETF (Index/Commodity allocation)' + scrTagsStr;
     } else if (scInfo) {
-      if (scInfo.status === 'CORE') scrNote = ' | SCREENER: Core compounder (qualified in ' + scInfo.score + ' monthly cycles)';
-      else if (scInfo.status === 'DROPOUT') scrNote = ' | SCREENER: Recent dropout (passed ' + scInfo.score + ' monthly cycles previously, missed this cutoff)';
-      else if (scInfo.status === 'REGULAR') scrNote = ' | SCREENER: Regular qualification (' + scInfo.score + ' monthly cycles tracked)';
-      else if (scInfo.status === 'NEW') scrNote = ' | SCREENER: Newly added to tracking this month (' + scInfo.score + ' cycles tracked — baseline month, NOT a sign of past failure)';
+      if (scInfo.status === 'CORE') scrNote = ' | SCREENER: Core compounder (qualified in ' + scInfo.score + ' monthly cycles)' + scrTagsStr;
+      else if (scInfo.status === 'DROPOUT') scrNote = ' | SCREENER: Recent dropout (passed ' + scInfo.score + ' monthly cycles previously, missed this cutoff)' + scrTagsStr;
+      else if (scInfo.status === 'REGULAR') scrNote = ' | SCREENER: Regular qualification (' + scInfo.score + ' monthly cycles tracked)' + scrTagsStr;
+      else if (scInfo.status === 'NEW') scrNote = ' | SCREENER: Newly added to tracking this month (' + scInfo.score + ' cycles tracked — baseline month, NOT a sign of past failure)' + scrTagsStr;
+    } else if (scrTags.length) {
+      scrNote = ' | SCREENER: Qualified in current screeners' + scrTagsStr;
     }
 
     // Price momentum & valuation signals
