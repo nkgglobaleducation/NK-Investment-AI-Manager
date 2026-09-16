@@ -2,6 +2,7 @@
 <html>
 <head>
 <base target="_top">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --navy:#0d2149; --navy2:#122b5c; --orange:#e8590c; --green:#1a9a4a;
@@ -170,6 +171,14 @@
     </div>
 
     <div class="side-card">
+      <h3>📋 MASTER EXCEL SHEET</h3>
+      <label>Master / Basket Sheet (.xlsx, .xls, .csv)</label>
+      <input type="file" id="fileMasterExcel" accept=".xlsx,.xls,.csv">
+      <div class="side-note" id="noteMasterExcel">No data yet</div>
+      <button class="btn btn-load" id="btnMasterExcel" onclick="loadMasterExcel()" style="margin-top:8px">📂 Upload Excel Sheet</button>
+    </div>
+
+    <div class="side-card">
       <div class="side-note mut" id="restoreNote">Loading saved data…</div>
     </div>
   </div>
@@ -179,6 +188,7 @@
     <div class="tabs">
       <div class="tab active" data-tab="dash" onclick="showTab('dash')">📊 Dashboard</div>
       <div class="tab" data-tab="dropouts" onclick="showTab('dropouts')">📉 Drop-outs (<span id="tabDropoutCount">0</span>)</div>
+      <div class="tab" data-tab="excel" onclick="showTab('excel')">📑 Master Sheet</div>
       <div class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</div>
     </div>
 
@@ -333,6 +343,37 @@
       </div>
     </div>
 
+    <!-- ---------- MASTER EXCEL SHEET ---------- -->
+    <div id="tab-excel" class="hidden">
+      <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:8px 0;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:15px;font-weight:700;color:var(--navy)">📑 <span id="excelFileTitle">Master Sheet</span></span>
+          <span class="badge b-hold" id="excelMetaBadge" style="font-size:11px">No data</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="text" id="excelSearchInput" placeholder="🔍 Search this sheet..." oninput="filterMasterExcelTable()" style="padding:6px 10px;border:1px solid var(--line);border-radius:4px;font-size:12px;width:220px">
+          <button class="chip chip-export" onclick="exportCurrentExcelSheet()" style="margin-left:0">⬇ Export CSV</button>
+        </div>
+      </div>
+
+      <div id="excelCaptionBanner" class="hidden" style="background:#f8fafd;border:1px solid #d0ddeb;padding:6px 12px;border-radius:6px;margin-bottom:8px;font-size:12px;font-weight:600;color:var(--navy)"></div>
+
+      <div id="excelSheetPills" class="chipbar" style="margin-bottom:6px"></div>
+      <div id="excelFilterBar" class="chipbar hidden" style="margin-bottom:10px"></div>
+
+      <div class="tblwrap" id="excelTableWrap" style="max-height:70vh;overflow-x:auto">
+        <div id="excelEmptyMsg" style="padding:48px 20px;text-align:center;color:var(--mut)">
+          <div style="font-size:36px;margin-bottom:10px">📊</div>
+          <b style="font-size:14px;color:var(--navy)">No Excel sheet data loaded yet</b><br>
+          <span style="font-size:12px;margin-top:4px;display:inline-block">Upload your Master Portfolio Excel file (<code>.xlsx</code> / <code>.csv</code>) using the upload option in the sidebar.</span>
+        </div>
+        <table id="excelTable" class="hidden" style="table-layout:auto;min-width:100%">
+          <thead id="excelThead"></thead>
+          <tbody id="excelTbody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- ---------- SETTINGS ---------- -->
     <div id="tab-settings" class="hidden">
       <div class="panel">
@@ -439,10 +480,19 @@ window.onload = () => {
     updateNotes();
     updateKeyStatus(d.keys);
     rebuild();
+    if (d.masterExcel && d.masterExcel.sheetNames && d.masterExcel.sheetNames.length) {
+      currentExcelSheetName = d.masterExcel.sheetNames[0];
+      renderMasterExcel();
+    }
     // If a server-side analysis is already running (even from another device), resume live progress
     if (d.aiStatus && d.aiStatus.running) startPolling();
     else if (d.aiStatus && d.aiStatus.msg) setStatus(d.aiStatus.msg);
-  }).withFailureHandler(err => setStatus('⚠ ' + err.message)).getInitialData();
+  }).withFailureHandler(err => {
+    const msg = '⚠ Error loading saved data: ' + (err && (err.message || err));
+    const rNote = document.getElementById('restoreNote');
+    if (rNote) { rNote.textContent = msg; rNote.style.color = '#ff8e8e'; }
+    setStatus(msg);
+  }).getInitialData();
 };
 
 function updateNotes(){
@@ -458,6 +508,21 @@ function updateNotes(){
   note('noteScrCmp', cmpLen, m.screenerCmpSaved || m.screenerSaved);
   note('noteScrQlt', qltLen, m.screenerQltSaved);
   note('noteScrMb',  mbLen,  m.screenerMbSaved);
+
+  const me = DATA.masterExcel;
+  const noteMe = document.getElementById('noteMasterExcel');
+  if (noteMe) {
+    if (me && me.saved && me.sheetNames && me.sheetNames.length) {
+      let countStr = me.sheetNames.length + ' sheets';
+      if (me.sheets && me.sheets['IN']) {
+        const inRows = Math.max(0, me.sheets['IN'].length - 2);
+        countStr = inRows + ' IN (' + me.sheetNames.length + ' sheets)';
+      }
+      noteMe.textContent = '☑ ' + countStr + ' (saved ' + me.saved + ')';
+    } else {
+      noteMe.textContent = 'No data yet';
+    }
+  }
 
   // Check if Screener CSV is more than 30 days old as on 15th of Month
   const ts = m.screenerSavedTs;
@@ -1046,8 +1111,10 @@ function showTab(t){
   document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active', el.dataset.tab===t));
   document.getElementById('tab-dash').classList.toggle('hidden', t!=='dash');
   document.getElementById('tab-dropouts').classList.toggle('hidden', t!=='dropouts');
+  document.getElementById('tab-excel').classList.toggle('hidden', t!=='excel');
   document.getElementById('tab-settings').classList.toggle('hidden', t!=='settings');
   if (t === 'dropouts') renderDropouts();
+  if (t === 'excel') renderMasterExcel();
 }
 
 /* ==================== DROPOUTS TAB LOGIC ==================== */
@@ -1217,6 +1284,426 @@ function exportDropoutsCSV() {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'screener_dropouts_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+}
+
+/* ==================== MASTER EXCEL SHEET ==================== */
+let currentExcelSheetName = '';
+let activeExcelFilters = {};
+let excelSortCol = null;
+let excelSortDir = 1;
+
+function sortMasterExcelBy(colIdx) {
+  if (excelSortCol === colIdx) {
+    excelSortDir *= -1;
+  } else {
+    excelSortCol = colIdx;
+    excelSortDir = 1;
+  }
+  renderCurrentSheetTable();
+}
+
+const EXCEL_FILTER_GROUPS = {
+  E: 'cat',
+  C: 'cat',
+  M: 'cat',
+  P1: 'port',
+  P2: 'port'
+};
+
+function isCellChecked(val) {
+  if (val == null) return false;
+  const s = String(val).trim().toLowerCase();
+  return s !== '' && s !== '-' && s !== '—' && s !== '0' && s !== 'false' && s !== 'null';
+}
+
+function escapeHtml(s){
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function loadMasterExcel() {
+  const fInput = document.getElementById('fileMasterExcel');
+  const f = fInput.files[0];
+  if (!f) { setStatus('Select an Excel (.xlsx / .xls / .csv) file first.'); return; }
+  if (typeof XLSX === 'undefined') {
+    setStatus('⚠ SheetJS library not loaded. Check internet or refresh.');
+    return;
+  }
+  const b = document.getElementById('btnMasterExcel');
+  b.disabled = true;
+  b.innerHTML = '<span class="spin"></span> Uploading…';
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheets = {};
+      const sheetNames = workbook.SheetNames || [];
+      sheetNames.forEach(name => {
+        const ws = workbook.Sheets[name];
+        const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        sheets[name] = json;
+      });
+
+      const payload = {
+        filename: f.name,
+        sheetNames: sheetNames,
+        sheets: sheets
+      };
+
+      if (!IS_APPS_SCRIPT) {
+        b.disabled = false;
+        b.innerHTML = '📂 Upload Excel Sheet';
+        DATA.masterExcel = payload;
+        activeExcelFilters = {};
+        currentExcelSheetName = sheetNames[0] || '';
+        updateNotes();
+        showTab('excel');
+        renderMasterExcel();
+        setStatus('Preview mode: simulated Excel upload for ' + f.name);
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(res => {
+          b.disabled = false;
+          b.innerHTML = '📂 Upload Excel Sheet';
+          DATA.masterExcel = {
+            filename: res.filename,
+            saved: res.saved,
+            sheets: sheets,
+            sheetNames: res.sheetNames
+          };
+          activeExcelFilters = {};
+          currentExcelSheetName = res.sheetNames[0] || '';
+          updateNotes();
+          showTab('excel');
+          renderMasterExcel();
+          setStatus('✅ Master Excel uploaded: ' + res.filename);
+        })
+        .withFailureHandler(err => {
+          b.disabled = false;
+          b.innerHTML = '📂 Upload Excel Sheet';
+          setStatus('⚠ Master Excel upload failed: ' + err.message);
+        })
+        .uploadMasterExcel(payload);
+    } catch (err) {
+      b.disabled = false;
+      b.innerHTML = '📂 Upload Excel Sheet';
+      setStatus('⚠ Failed to parse file: ' + err.message);
+    }
+  };
+  reader.onerror = function() {
+    b.disabled = false;
+    b.innerHTML = '📂 Upload Excel Sheet';
+    setStatus('⚠ Failed to read file.');
+  };
+  reader.readAsArrayBuffer(f);
+}
+
+function renderMasterExcel(targetSheet) {
+  const me = DATA && DATA.masterExcel;
+  const emptyEl = document.getElementById('excelEmptyMsg');
+  const tableEl = document.getElementById('excelTable');
+  const pillsEl = document.getElementById('excelSheetPills');
+  const filterBarEl = document.getElementById('excelFilterBar');
+  const titleEl = document.getElementById('excelFileTitle');
+  const badgeEl = document.getElementById('excelMetaBadge');
+  const captionEl = document.getElementById('excelCaptionBanner');
+
+  if (!me || !me.sheetNames || !me.sheetNames.length) {
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    if (tableEl) tableEl.classList.add('hidden');
+    if (pillsEl) pillsEl.innerHTML = '';
+    if (filterBarEl) filterBarEl.classList.add('hidden');
+    if (captionEl) captionEl.classList.add('hidden');
+    if (titleEl) titleEl.textContent = 'Master Sheet';
+    if (badgeEl) badgeEl.textContent = 'No data';
+    return;
+  }
+
+  if (emptyEl) emptyEl.classList.add('hidden');
+  if (tableEl) tableEl.classList.remove('hidden');
+  if (titleEl) titleEl.textContent = me.filename || 'Master Sheet';
+  if (badgeEl) badgeEl.textContent = 'Updated: ' + (me.saved || 'Saved');
+
+  // Sheet pills
+  if (targetSheet && me.sheetNames.indexOf(targetSheet) > -1) {
+    if (targetSheet !== currentExcelSheetName) activeExcelFilters = {};
+    currentExcelSheetName = targetSheet;
+  } else if (!currentExcelSheetName || me.sheetNames.indexOf(currentExcelSheetName) === -1) {
+    activeExcelFilters = {};
+    currentExcelSheetName = me.sheetNames[0];
+  }
+
+  pillsEl.innerHTML = me.sheetNames.map(s => {
+    const rows = (me.sheets && me.sheets[s]) || [];
+    const count = rows.length > 1 ? (rows.length - 1) : rows.length;
+    const active = (s === currentExcelSheetName) ? 'active' : '';
+    return '<div class="chip ' + active + '" onclick="renderMasterExcel(\'' + s.replace(/'/g, "\\'") + '\')">' +
+           escapeHtml(s) + ' (' + count + ')</div>';
+  }).join('');
+
+  renderCurrentSheetTable();
+}
+
+function renderCurrentSheetTable() {
+  const me = DATA && DATA.masterExcel;
+  if (!me || !me.sheets || !currentExcelSheetName) return;
+
+  const rawRows = me.sheets[currentExcelSheetName] || [];
+  const thead = document.getElementById('excelThead');
+  const tbody = document.getElementById('excelTbody');
+  const captionEl = document.getElementById('excelCaptionBanner');
+  const filterBarEl = document.getElementById('excelFilterBar');
+  thead.innerHTML = '';
+  tbody.innerHTML = '';
+
+  if (!rawRows.length) {
+    if (captionEl) captionEl.classList.add('hidden');
+    if (filterBarEl) filterBarEl.classList.add('hidden');
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--mut)">Sheet is empty.</td></tr>';
+    return;
+  }
+
+  // Detect single-cell title row (e.g. ['MASTER IN — 50 STOCK EQUITY BASKET'])
+  let startRowIdx = 0;
+  let headerRowIdx = 0;
+  const row0 = rawRows[0] || [];
+  const nonBlank0 = row0.filter(c => String(c).trim() !== '');
+
+  if (rawRows.length > 1 && nonBlank0.length === 1 && String(row0[0]).length > 5) {
+    if (captionEl) {
+      captionEl.textContent = String(row0[0]);
+      captionEl.classList.remove('hidden');
+    }
+    headerRowIdx = 1;
+    startRowIdx = 2;
+  } else {
+    if (captionEl) captionEl.classList.add('hidden');
+    headerRowIdx = 0;
+    startRowIdx = 1;
+  }
+
+  // If there's an empty row between title and headers
+  if (rawRows.length > startRowIdx && (rawRows[headerRowIdx] || []).filter(c => String(c).trim() !== '').length === 0) {
+    headerRowIdx++;
+    startRowIdx++;
+  }
+
+  const headerRow = rawRows[headerRowIdx] || [];
+
+  // Identify column indices for E, C, M, P1, P2
+  const colMap = {};
+  headerRow.forEach((h, i) => {
+    const name = String(h || '').trim().toUpperCase();
+    if (['E', 'C', 'M', 'P1', 'P2'].indexOf(name) > -1) {
+      colMap[name] = i;
+    }
+  });
+
+  // Calculate filter counts
+  const filterCounts = { ALL: 0, E: 0, C: 0, M: 0, P1: 0, P2: 0 };
+  for (let r = startRowIdx; r < rawRows.length; r++) {
+    const row = rawRows[r] || [];
+    if (row.filter(c => String(c).trim() !== '').length === 0) continue;
+    filterCounts.ALL++;
+    ['E', 'C', 'M', 'P1', 'P2'].forEach(k => {
+      if (colMap[k] != null && isCellChecked(row[colMap[k]])) {
+        filterCounts[k]++;
+      }
+    });
+  }
+
+  // Render filter bar
+  const availableFilters = ['E', 'C', 'M', 'P1', 'P2'].filter(k => colMap[k] != null);
+  if (filterBarEl) {
+    if (availableFilters.length > 0) {
+      filterBarEl.classList.remove('hidden');
+      renderExcelFilterChips(availableFilters, filterCounts);
+    } else {
+      filterBarEl.classList.add('hidden');
+    }
+  }
+
+  let thHtml = '<tr style="background:var(--head);color:#fff">';
+  headerRow.forEach((h, i) => {
+    const text = String(h != null ? h : '').trim() || ('Col ' + (i + 1));
+    const upper = text.toUpperCase();
+    const isCenter = ['E', 'C', 'M', 'P1', 'P2'].indexOf(upper) > -1;
+    const alignClass = isCenter ? '' : 'l';
+    const alignStyle = isCenter ? 'text-align:center;width:44px;' : '';
+    const isSorted = excelSortCol === i;
+    const sortIcon = isSorted ? (excelSortDir > 0 ? ' <span style="color:var(--orange)">↑</span>' : ' <span style="color:var(--orange)">↓</span>') : ' <span class="arr" style="opacity:.6;font-size:8.5px">⇅</span>';
+    thHtml += '<th class="' + alignClass + '" onclick="sortMasterExcelBy(' + i + ')" style="padding:8px 8px;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;border-bottom:2px solid var(--orange);' + alignStyle + '">' + escapeHtml(text) + sortIcon + '</th>';
+  });
+  thHtml += '</tr>';
+  thead.innerHTML = thHtml;
+
+  const dataRows = [];
+  for (let r = startRowIdx; r < rawRows.length; r++) {
+    const row = rawRows[r] || [];
+    if (row.filter(c => String(c).trim() !== '').length === 0) continue;
+    dataRows.push(row);
+  }
+
+  if (excelSortCol != null) {
+    dataRows.sort((a, b) => {
+      let va = a[excelSortCol] != null ? a[excelSortCol] : '';
+      let vb = b[excelSortCol] != null ? b[excelSortCol] : '';
+
+      const na = typeof va === 'number' ? va : parseFloat(String(va).replace(/[%,₹,]/g, '').trim());
+      const nb = typeof vb === 'number' ? vb : parseFloat(String(vb).replace(/[%,₹,]/g, '').trim());
+
+      if (!isNaN(na) && !isNaN(nb) && String(va).trim() !== '' && String(vb).trim() !== '') {
+        return (na - nb) * excelSortDir;
+      }
+      return String(va).localeCompare(String(vb)) * excelSortDir;
+    });
+  }
+
+  let trHtml = '';
+  for (let r = 0; r < dataRows.length; r++) {
+    const row = dataRows[r] || [];
+
+    let dataAttrs = '';
+    ['E', 'C', 'M', 'P1', 'P2'].forEach(k => {
+      if (colMap[k] != null) {
+        const hasFlag = isCellChecked(row[colMap[k]]) ? '1' : '0';
+        dataAttrs += ' data-' + k.toLowerCase() + '="' + hasFlag + '"';
+      }
+    });
+
+    trHtml += '<tr class="excel-data-row"' + dataAttrs + '>';
+    for (let c = 0; c < headerRow.length; c++) {
+      const val = row[c] != null ? String(row[c]).trim() : '';
+      const colName = String(headerRow[c] || '').trim().toUpperCase();
+      const isCenter = ['E', 'C', 'M', 'P1', 'P2'].indexOf(colName) > -1;
+      const alignClass = isCenter ? '' : 'l';
+      const alignStyle = isCenter ? 'text-align:center;' : '';
+
+      let cellDisplay = escapeHtml(val);
+      if (val === '✓') {
+        cellDisplay = '<span class="badge b-buy" style="font-size:10px">✓</span>';
+      } else if (val === 'IN') {
+        cellDisplay = '<span class="badge b-buy">IN</span>';
+      } else if (val === 'OUT') {
+        cellDisplay = '<span class="badge b-exit">OUT</span>';
+      } else if (val === 'P1') {
+        cellDisplay = '<span class="badge b-hold">P1</span>';
+      } else if (val === 'P2') {
+        cellDisplay = '<span class="badge b-rally">P2</span>';
+      } else if ((colName === 'STOCK' || c === 1) && /^[A-Z0-9&-]{2,15}$/.test(val)) {
+        cellDisplay = '<b class="sym">' + escapeHtml(val) + '</b>';
+      }
+
+      trHtml += '<td class="' + alignClass + '" style="padding:6px 8px;border-bottom:1px solid #edf0f5;white-space:normal;' + alignStyle + '">' + cellDisplay + '</td>';
+    }
+    trHtml += '</tr>';
+  }
+  tbody.innerHTML = trHtml;
+
+  filterMasterExcelTable();
+}
+
+function renderExcelFilterChips(availableFilters, counts) {
+  const filterBarEl = document.getElementById('excelFilterBar');
+  if (!filterBarEl) return;
+
+  const anySel = Object.keys(activeExcelFilters).length > 0;
+  const defs = [['ALL', 'All (' + (counts.ALL || 0) + ')']];
+  availableFilters.forEach(k => {
+    defs.push([k, k + ' (' + (counts[k] || 0) + ')']);
+  });
+
+  const chipsHtml = defs.map(d => {
+    const on = (d[0] === 'ALL') ? !anySel : !!activeExcelFilters[d[0]];
+    return '<button class="chip ' + (on ? 'active' : '') + '" onclick="toggleExcelFilter(\'' + d[0] + '\')">' +
+           d[1] + '</button>';
+  }).join('');
+
+  filterBarEl.innerHTML = chipsHtml + '<span id="excelFilterNote" class="filternote"></span>';
+}
+
+function toggleExcelFilter(f) {
+  if (f === 'ALL') {
+    activeExcelFilters = {};
+  } else if (activeExcelFilters[f]) {
+    delete activeExcelFilters[f];
+  } else {
+    activeExcelFilters[f] = true;
+  }
+
+  // Update chip active classes
+  const filterBarEl = document.getElementById('excelFilterBar');
+  if (filterBarEl) {
+    const anySel = Object.keys(activeExcelFilters).length > 0;
+    filterBarEl.querySelectorAll('.chip').forEach(btn => {
+      const txt = btn.textContent.split(' ')[0];
+      const on = (txt === 'All') ? !anySel : !!activeExcelFilters[txt];
+      btn.classList.toggle('active', on);
+    });
+  }
+
+  filterMasterExcelTable();
+}
+
+function filterMasterExcelTable() {
+  const query = (document.getElementById('excelSearchInput').value || '').trim().toLowerCase();
+  const rows = document.querySelectorAll('#excelTbody tr.excel-data-row');
+  const selKeys = Object.keys(activeExcelFilters);
+
+  const byGroup = {};
+  selKeys.forEach(k => {
+    const g = EXCEL_FILTER_GROUPS[k] || k;
+    (byGroup[g] = byGroup[g] || []).push(k);
+  });
+
+  let visibleCount = 0;
+  rows.forEach(tr => {
+    const textMatch = !query || tr.textContent.toLowerCase().indexOf(query) > -1;
+
+    let filterMatch = true;
+    if (selKeys.length > 0) {
+      filterMatch = Object.keys(byGroup).every(g => {
+        return byGroup[g].some(k => tr.getAttribute('data-' + k.toLowerCase()) === '1');
+      });
+    }
+
+    const show = textMatch && filterMatch;
+    tr.style.display = show ? '' : 'none';
+    if (show) visibleCount++;
+  });
+
+  const noteEl = document.getElementById('excelFilterNote');
+  if (noteEl) {
+    if (selKeys.length > 0 || query) {
+      noteEl.textContent = 'Showing ' + visibleCount + ' of ' + rows.length;
+    } else {
+      noteEl.textContent = '';
+    }
+  }
+}
+
+function exportCurrentExcelSheet() {
+  const me = DATA && DATA.masterExcel;
+  if (!me || !me.sheets || !currentExcelSheetName) return;
+  const rawRows = me.sheets[currentExcelSheetName] || [];
+  if (!rawRows.length) return;
+
+  const csv = rawRows.map(r =>
+    (Array.isArray(r) ? r : [r]).map(v => {
+      const s = String(v != null ? v : '').replace(/"/g, '""');
+      return s.indexOf(',') > -1 || s.indexOf('\n') > -1 || s.indexOf('"') > -1 ? ('"' + s + '"') : s;
+    }).join(',')
+  ).join('\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (currentExcelSheetName || 'excel_sheet') + '_export.csv';
   a.click();
 }
 function saveKeys(){
