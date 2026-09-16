@@ -24,6 +24,7 @@ const TAB_SCREENER_HISTORY      = 'Screener_History';
 const TAB_PRICES                = 'LivePrices';
 const TAB_AI               = 'AI_Analysis';
 const TAB_INDICES          = 'Indices';
+const TAB_PREFIX_MASTER    = 'Master_';
 // Scratch tab used only to probe whether a proposed ALT ticker actually exists (see
 // verifyAltTickersExist_). Created hidden on first use; safe to delete — it is rebuilt on demand
 // and holds no durable data.
@@ -260,6 +261,108 @@ function uploadCSV(type, csvText) {
     lock.releaseLock();
   }
   return { count: data.length, saved: now };
+}
+
+function uploadMasterExcel(payload) {
+  if (typeof payload === 'string') {
+    try { payload = JSON.parse(payload); } catch (e) {}
+  }
+  if (!payload || !payload.sheets) throw new Error('Invalid Excel payload: no sheets found.');
+
+  const sheetNames = payload.sheetNames || Object.keys(payload.sheets);
+  if (!sheetNames.length) throw new Error('Excel workbook has no sheets.');
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) throw new Error('Another upload is in progress — try again in a moment.');
+
+  const now = nowIST_();
+  const counts = {};
+
+  try {
+    for (const sName of sheetNames) {
+      const rows = payload.sheets[sName];
+      if (!rows || !Array.isArray(rows)) continue;
+
+      // Safe tab name: prefix with TAB_PREFIX_MASTER and strip forbidden sheet characters
+      const cleanName = String(sName).replace(/[\*\?\:\/\\\[\]\']/g, '_').trim().slice(0, 40);
+      const tabName = TAB_PREFIX_MASTER + cleanName;
+
+      let sh = ss().getSheetByName(tabName);
+      if (!sh) {
+        sh = ss().insertSheet(tabName);
+      } else {
+        sh.clearContents();
+      }
+
+      if (rows.length > 0) {
+        // Find max column count
+        let maxCols = 1;
+        rows.forEach(r => {
+          if (Array.isArray(r) && r.length > maxCols) maxCols = r.length;
+        });
+
+        // Normalize rows to rectangular 2D array
+        const grid = rows.map(r => {
+          const rowArr = Array.isArray(r) ? r.slice(0, maxCols) : [r];
+          while (rowArr.length < maxCols) rowArr.push('');
+          return rowArr.map(v => (v === undefined || v === null) ? '' : v);
+        });
+
+        if (grid.length && maxCols > 0) {
+          sh.getRange(1, 1, grid.length, maxCols).setValues(grid);
+        }
+        counts[sName] = grid.length;
+      } else {
+        counts[sName] = 0;
+      }
+    }
+
+    const filename = payload.filename || 'Uploaded_Excel.xlsx';
+    setMeta_('MASTER_EXCEL_FILENAME', filename);
+    setMeta_('MASTER_EXCEL_SAVED', now);
+    setMeta_('MASTER_EXCEL_SHEETS', JSON.stringify(sheetNames));
+
+    return {
+      filename: filename,
+      saved: now,
+      sheetNames: sheetNames,
+      counts: counts
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function readMasterExcel_() {
+  const saved = getMeta_('MASTER_EXCEL_SAVED');
+  if (!saved) return { filename: '', saved: '', sheets: {}, sheetNames: [] };
+
+  const filename = getMeta_('MASTER_EXCEL_FILENAME') || 'Uploaded_Excel.xlsx';
+  let sheetNames = [];
+  try {
+    sheetNames = JSON.parse(getMeta_('MASTER_EXCEL_SHEETS') || '[]');
+  } catch (e) {
+    sheetNames = [];
+  }
+
+  const sheets = {};
+  sheetNames.forEach(sName => {
+    const cleanName = String(sName).replace(/[\*\?\:\/\\\[\]\']/g, '_').trim().slice(0, 40);
+    const tabName = TAB_PREFIX_MASTER + cleanName;
+    const sh = ss().getSheetByName(tabName);
+    if (sh && sh.getLastRow() >= 1 && sh.getLastColumn() >= 1) {
+      sheets[sName] = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getValues();
+    } else {
+      sheets[sName] = [];
+    }
+  });
+
+  return {
+    filename: filename,
+    saved: saved,
+    sheets: sheets,
+    sheetNames: sheetNames
+  };
 }
 
 function getAllScreenedSymbols_() {
@@ -535,6 +638,7 @@ function getInitialData() {
     },
     screenerHistory: screenerHistory,
     prices: prices, ai: ai, watchlist: watchlist, indices: readIndices_(),
+    masterExcel: readMasterExcel_(),
     meta: {
       p1Saved: getMeta_('P1_SAVED'), p2Saved: getMeta_('P2_SAVED'),
       screenerSaved: getMeta_('SCREENER_SAVED'),
@@ -542,7 +646,9 @@ function getInitialData() {
       screenerCmpSaved: getMeta_('SCREENER_COMPOUNDER_SAVED') || getMeta_('SCREENER_SAVED'),
       screenerQltSaved: getMeta_('SCREENER_QUALITY_SAVED'),
       screenerMbSaved: getMeta_('SCREENER_MULTIBAGGER_SAVED'),
-      pricesSaved: getMeta_('PRICES_SAVED'), aiSaved: getMeta_('AI_SAVED')
+      pricesSaved: getMeta_('PRICES_SAVED'), aiSaved: getMeta_('AI_SAVED'),
+      masterExcelSaved: getMeta_('MASTER_EXCEL_SAVED'),
+      masterExcelFilename: getMeta_('MASTER_EXCEL_FILENAME')
     },
     keys: getKeyStatus(),
     aiStatus: getAIStatus_()
