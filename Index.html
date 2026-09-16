@@ -178,6 +178,7 @@
   <div class="main">
     <div class="tabs">
       <div class="tab active" data-tab="dash" onclick="showTab('dash')">📊 Dashboard</div>
+      <div class="tab" data-tab="dropouts" onclick="showTab('dropouts')">📉 Drop-outs (<span id="tabDropoutCount">0</span>)</div>
       <div class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</div>
     </div>
 
@@ -260,6 +261,78 @@
       </div>
     </div>
 
+    <!-- ---------- DROPOUTS ---------- -->
+    <div id="tab-dropouts" class="hidden">
+      <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr))">
+        <div class="stat">
+          <div class="lbl">TOTAL DROPOUTS</div>
+          <div class="val red" id="stDropTotal">0</div>
+          <div class="sub">Failed current 15th cut-off</div>
+        </div>
+        <div class="stat">
+          <div class="lbl">DROPPED FROM COMPOUNDER</div>
+          <div class="val" id="stDropCmp" style="color:var(--amber)">0</div>
+          <div class="sub">Missed Compounder screener</div>
+        </div>
+        <div class="stat">
+          <div class="lbl">DROPPED FROM QUALITY</div>
+          <div class="val" id="stDropQlt" style="color:var(--blue)">0</div>
+          <div class="sub">Missed Quality screener</div>
+        </div>
+        <div class="stat">
+          <div class="lbl">DROPPED FROM MULTIBAGGER</div>
+          <div class="val" id="stDropMb" style="color:#a855f7">0</div>
+          <div class="sub">Missed Multibagger screener</div>
+        </div>
+      </div>
+
+      <div class="chipbar" style="margin-top:10px">
+        <input type="text" id="dropSearch" placeholder="🔍 Search dropout symbol / company…" oninput="renderDropouts()" style="padding:5px 10px;border:1px solid var(--line);border-radius:16px;font-size:12px;width:240px;outline:none">
+        <button class="chip active" id="dropFilterAll" onclick="setDropFilter('ALL')">All Dropouts</button>
+        <button class="chip" id="dropFilterCmp" onclick="setDropFilter('CMP')">Compounder</button>
+        <button class="chip" id="dropFilterQlt" onclick="setDropFilter('QLT')">Quality</button>
+        <button class="chip" id="dropFilterMb" onclick="setDropFilter('MB')">Multibagger</button>
+        <button class="btn btn-ai" id="btnDiagnose" onclick="triggerAIDiagnosis()" style="margin-left:auto;font-size:11.5px;padding:6px 12px">⚡ Refresh AI Diagnoses</button>
+        <button class="chip chip-export" onclick="exportDropoutsCSV()" style="margin-left:6px">📥 Export Dropouts</button>
+      </div>
+
+      <div class="sortnote" id="dropSortNote">Sorted by # ↑ · <a onclick="clearDropSort()">clear</a></div>
+
+      <div class="tblwrap">
+        <table id="dropTable">
+          <colgroup>
+            <col style="width:34px">
+            <col style="width:110px">
+            <col style="width:38px">
+            <col style="width:38px">
+            <col style="width:40px">
+            <col style="width:44px">
+            <col style="width:44px">
+            <col style="width:160px">
+            <col style="width:150px">
+            <col style="width:90px">
+            <col>
+          </colgroup>
+          <thead id="dropThead">
+            <tr>
+              <th onclick="sortDropBy('idx')"># <span class="arr">⇅</span></th>
+              <th class="l" onclick="sortDropBy('sym')">Stock <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('p1')">P1 <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('p2')">P2 <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('etf')">E <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('cmp')">C <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('mb')">M <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('passedPeriod')">Passed Period <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('failedPeriod')">Failed Period <span class="arr">⇅</span></th>
+              <th class="l" onclick="sortDropBy('decision')">Decision <span class="arr">⇅</span></th>
+              <th class="l" onclick="sortDropBy('reason')">Reason <span class="arr">⇅</span></th>
+            </tr>
+          </thead>
+          <tbody id="dropTbody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- ---------- SETTINGS ---------- -->
     <div id="tab-settings" class="hidden">
       <div class="panel">
@@ -325,7 +398,7 @@ const FILTER_GROUPS = {
 let pollTimer = null;
 
 const COLS = [
-  {k:'star',  t:'',            l:1, sortable:false},
+  {k:'star',  t:'★',           l:1},
   {k:'sym',   t:'INSTRUMENT',  l:1},
   {k:'qty',   t:'QTY'},
   {k:'avg',   t:'AVG'},
@@ -704,7 +777,23 @@ function renderTable(){
   let rows = filteredRows();
   if (sortKey){
     rows = rows.slice().sort((a,b)=>{
-      const x=a[sortKey], y=b[sortKey];
+      let x = a[sortKey], y = b[sortKey];
+      if (sortKey === 'star') {
+        x = DATA.watchlist.indexOf(a.sym) > -1 ? 1 : 0;
+        y = DATA.watchlist.indexOf(b.sym) > -1 ? 1 : 0;
+      } else if (sortKey === 'scr') {
+        const getVal = r => {
+          if (!r.scr) return '';
+          if (r.scr.status === 'ETF') return '1_ETF';
+          if (r.scr.status === 'DROPOUT') return '9_DROP';
+          let s = '';
+          if (r.scr.cmp) s += 'CMP ';
+          if (r.scr.qlt) s += 'QLT ';
+          if (r.scr.mb)  s += 'MB ';
+          return s || r.scr.score || '';
+        };
+        x = getVal(a); y = getVal(b);
+      }
       if (typeof x==='string') return sortDir * String(x).localeCompare(String(y));
       return sortDir * ((x===y)?0:(x>y?1:-1));
     });
@@ -952,11 +1041,183 @@ function exportCSV(){
   a.click();
 }
 
-/* ---- Settings ---- */
+/* ---- Tab Switching ---- */
 function showTab(t){
   document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active', el.dataset.tab===t));
   document.getElementById('tab-dash').classList.toggle('hidden', t!=='dash');
+  document.getElementById('tab-dropouts').classList.toggle('hidden', t!=='dropouts');
   document.getElementById('tab-settings').classList.toggle('hidden', t!=='settings');
+  if (t === 'dropouts') renderDropouts();
+}
+
+/* ==================== DROPOUTS TAB LOGIC ==================== */
+let activeDropFilter = 'ALL';
+let dropSortKey = 'idx', dropSortDir = 1;
+
+function setDropFilter(f) {
+  activeDropFilter = f;
+  ['ALL','CMP','QLT','MB'].forEach(k => {
+    const el = document.getElementById('dropFilter' + (k === 'ALL' ? 'All' : (k[0] + k.slice(1).toLowerCase())));
+    if (el) el.classList.toggle('active', k === f);
+  });
+  renderDropouts();
+}
+
+function sortDropBy(k) {
+  if (dropSortKey === k) dropSortDir *= -1;
+  else { dropSortKey = k; dropSortDir = 1; }
+  document.getElementById('dropSortNote').innerHTML =
+    'Sorted by ' + k.toUpperCase() + (dropSortDir > 0 ? ' ↑' : ' ↓') + ' · <a onclick="clearDropSort()">clear</a>';
+  renderDropouts();
+}
+
+function clearDropSort() {
+  dropSortKey = 'idx'; dropSortDir = 1;
+  document.getElementById('dropSortNote').innerHTML = 'Sorted by # ↑ · <a onclick="clearDropSort()">clear</a>';
+  renderDropouts();
+}
+
+function renderDropouts() {
+  const list = DATA.dropouts || [];
+  const q = (document.getElementById('dropSearch')?.value || '').trim().toUpperCase();
+
+  // Compute stats
+  const total = list.length;
+  const cmpCount = list.filter(d => (d.screenersDropped || '').includes('Compounder')).length;
+  const qltCount = list.filter(d => (d.screenersDropped || '').includes('Quality')).length;
+  const mbCount  = list.filter(d => (d.screenersDropped || '').includes('Multibagger')).length;
+
+  set('stDropTotal', total);
+  set('stDropCmp', cmpCount);
+  set('stDropQlt', qltCount);
+  set('stDropMb', mbCount);
+  const tabBadge = document.getElementById('tabDropoutCount');
+  if (tabBadge) tabBadge.textContent = total;
+
+  let filtered = list;
+  if (activeDropFilter === 'CMP') filtered = filtered.filter(d => (d.screenersDropped || '').includes('Compounder'));
+  else if (activeDropFilter === 'QLT') filtered = filtered.filter(d => (d.screenersDropped || '').includes('Quality'));
+  else if (activeDropFilter === 'MB') filtered = filtered.filter(d => (d.screenersDropped || '').includes('Multibagger'));
+
+  if (q) {
+    filtered = filtered.filter(d => d.sym.includes(q) || (d.company || '').toUpperCase().includes(q));
+  }
+
+  // Find portfolio maps
+  const p1Map = {}, p2Map = {};
+  (DATA.p1 || []).forEach(h => p1Map[h.sym] = 1);
+  (DATA.p2 || []).forEach(h => p2Map[h.sym] = 1);
+
+  // Sorting
+  if (dropSortKey) {
+    filtered = filtered.slice().sort((a, b) => {
+      let x = a[dropSortKey], y = b[dropSortKey];
+      if (dropSortKey === 'p1') {
+        x = p1Map[a.sym] ? 1 : 0;
+        y = p1Map[b.sym] ? 1 : 0;
+      } else if (dropSortKey === 'p2') {
+        x = p2Map[a.sym] ? 1 : 0;
+        y = p2Map[b.sym] ? 1 : 0;
+      } else if (dropSortKey === 'etf') {
+        x = isEtf(a.sym) ? 1 : 0;
+        y = isEtf(b.sym) ? 1 : 0;
+      } else if (dropSortKey === 'cmp') {
+        x = (a.screenersDropped || '').includes('Compounder') ? 1 : 0;
+        y = (b.screenersDropped || '').includes('Compounder') ? 1 : 0;
+      } else if (dropSortKey === 'mb') {
+        x = (a.screenersDropped || '').includes('Multibagger') ? 1 : 0;
+        y = (b.screenersDropped || '').includes('Multibagger') ? 1 : 0;
+      }
+      if (typeof x === 'string') return dropSortDir * String(x).localeCompare(String(y));
+      return dropSortDir * ((x === y) ? 0 : (x > y ? 1 : -1));
+    });
+  }
+
+  const tbody = document.getElementById('dropTbody');
+  if (!tbody) return;
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:#7183a1">No dropout stocks found.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((d, i) => {
+    const isP1 = !!p1Map[d.sym];
+    const isP2 = !!p2Map[d.sym];
+    const isE  = isEtf(d.sym);
+    const inCmp = (d.screenersDropped || '').includes('Compounder');
+    const inMb  = (d.screenersDropped || '').includes('Multibagger');
+
+    const p1Badge = isP1 ? '<span class="badge b-p1">P1</span>' : '<span class="b-none">—</span>';
+    const p2Badge = isP2 ? '<span class="badge b-p2">P2</span>' : '<span class="b-none">—</span>';
+    const etfBadge = isE ? '<span class="badge b-buy">ETF</span>' : '<span class="b-none">—</span>';
+    const cmpBadge = inCmp ? '<span class="badge b-exit">DROP</span>' : '<span class="tick">✓</span>';
+    const mbBadge  = inMb  ? '<span class="badge b-exit">DROP</span>' : '<span class="tick">✓</span>';
+
+    return '<tr>'
+      + '<td>' + (d.idx || (i + 1)) + '</td>'
+      + '<td class="l sym" title="' + (d.company || d.sym) + '"><b>' + d.sym + '</b><br><span style="font-size:10px;color:#7183a1;font-weight:400">' + (d.company || '') + '</span></td>'
+      + '<td>' + p1Badge + '</td>'
+      + '<td>' + p2Badge + '</td>'
+      + '<td>' + etfBadge + '</td>'
+      + '<td>' + cmpBadge + '</td>'
+      + '<td>' + mbBadge + '</td>'
+      + '<td style="font-size:11px;color:#2e7d32;font-weight:600">' + (d.passedPeriod || '—') + '</td>'
+      + '<td style="font-size:11px;color:var(--red);font-weight:600">' + (d.failedPeriod || '—') + '</td>'
+      + '<td class="l">' + badge(d.decision || 'HOLD') + '</td>'
+      + '<td class="l" style="white-space:normal;font-size:11.5px;line-height:1.3;color:#334155">' + (d.reason || 'Missed recent screening cutoff criteria.') + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+function triggerAIDiagnosis() {
+  const b = document.getElementById('btnDiagnose');
+  b.disabled = true;
+  b.innerHTML = '<span class="spin"></span>Diagnosing…';
+  google.script.run.withSuccessHandler(res => {
+    b.disabled = false;
+    b.innerHTML = '⚡ Refresh AI Diagnoses';
+    if (res && res.dropouts) {
+      DATA.dropouts = res.dropouts;
+      renderDropouts();
+    }
+    setStatus('Diagnosed ' + (res.updated || 0) + ' dropouts.');
+  }).withFailureHandler(e => {
+    b.disabled = false;
+    b.innerHTML = '⚡ Refresh AI Diagnoses';
+    setStatus('⚠ Diagnosis failed: ' + e.message);
+  }).diagnoseDropoutReasons();
+}
+
+function exportDropoutsCSV() {
+  const list = DATA.dropouts || [];
+  if (!list.length) { setStatus('No dropouts to export.'); return; }
+  let csv = '#,Stock,Company,P1,P2,ETF,Compounder,Multibagger,Passed_Period,Failed_Period,Decision,Reason\n';
+  const p1Map = {}, p2Map = {};
+  (DATA.p1 || []).forEach(h => p1Map[h.sym] = 1);
+  (DATA.p2 || []).forEach(h => p2Map[h.sym] = 1);
+
+  list.forEach((d, i) => {
+    csv += [
+      d.idx || (i + 1),
+      d.sym,
+      '"' + (d.company || '').replace(/"/g, '""') + '"',
+      p1Map[d.sym] ? 'YES' : 'NO',
+      p2Map[d.sym] ? 'YES' : 'NO',
+      isEtf(d.sym) ? 'YES' : 'NO',
+      (d.screenersDropped || '').includes('Compounder') ? 'DROP' : 'PASS',
+      (d.screenersDropped || '').includes('Multibagger') ? 'DROP' : 'PASS',
+      '"' + (d.passedPeriod || '').replace(/"/g, '""') + '"',
+      '"' + (d.failedPeriod || '').replace(/"/g, '""') + '"',
+      d.decision || 'HOLD',
+      '"' + (d.reason || '').replace(/"/g, '""') + '"'
+    ].join(',') + '\n';
+  });
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'screener_dropouts_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
 }
 function saveKeys(){
   google.script.run.withSuccessHandler(updateKeyStatus).saveApiKeys({

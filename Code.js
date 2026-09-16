@@ -21,6 +21,7 @@ const TAB_SCREENER_COMPOUNDER   = 'Screener_Compounder';
 const TAB_SCREENER_QUALITY      = 'Screener_Quality';
 const TAB_SCREENER_MULTIBAGGER  = 'Screener_Multibagger';
 const TAB_SCREENER_HISTORY      = 'Screener_History';
+const TAB_SCREENER_DROPOUTS     = 'Screener_Dropouts';
 const TAB_PRICES                = 'LivePrices';
 const TAB_AI               = 'AI_Analysis';
 const TAB_INDICES          = 'Indices';
@@ -403,7 +404,248 @@ function updateScreenerHistory_(uploadedCodes, nowStr) {
     sh.getRange(2, 3, outRows.length, 1).setNumberFormat('@');
     sh.getRange(2, 1, outRows.length, 6).setValues(outRows);
   }
+
+  // Automatically update the dedicated Screener_Dropouts tab
+  updateDropoutsSheet_(updatedMap, curCycles, nowStr);
+
   return updatedMap;
+}
+
+function formatCycleName_(cycleKey) {
+  if (!cycleKey || !cycleKey.includes('-')) return cycleKey || '';
+  const parts = cycleKey.split('-');
+  const y = parts[0];
+  const m = parseInt(parts[1], 10);
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return (monthNames[m - 1] || '') + ' ' + y;
+}
+
+function calculateDropoutTimeline_(cyclesObj, curCycles) {
+  const curCycle = (curCycles && curCycles[0]) || getCycleKey_();
+  const allCycleKeys = Object.keys(cyclesObj || {}).sort();
+  const passedKeys = allCycleKeys.filter(k => cyclesObj[k] === 1);
+
+  if (!passedKeys.length) {
+    return {
+      passedFrom: '—',
+      passedTo: '—',
+      passedPeriod: 'No prior qualification',
+      failedSince: curCycle,
+      failedPeriod: formatCycleName_(curCycle) + ' – Present (1 mo)',
+      passedMonths: 0,
+      failedMonths: 1
+    };
+  }
+
+  const passedFrom = passedKeys[0];
+  const passedTo = passedKeys[passedKeys.length - 1];
+  const passedMonths = passedKeys.length;
+  const passedPeriod = formatCycleName_(passedFrom) + ' – ' + formatCycleName_(passedTo) + ' (' + passedMonths + ' cycle' + (passedMonths > 1 ? 's' : '') + ')';
+
+  // Calculate failed months count going backwards from curCycle
+  let failedMonths = 0;
+  let failedSince = curCycle;
+  if (curCycles && curCycles.length) {
+    for (let i = 0; i < curCycles.length; i++) {
+      const ck = curCycles[i];
+      if (cyclesObj[ck] === 1) break;
+      failedMonths++;
+      failedSince = ck;
+    }
+  }
+  if (failedMonths === 0) failedMonths = 1;
+
+  const failedPeriod = formatCycleName_(failedSince) + ' – Present (' + failedMonths + ' mo' + (failedMonths > 1 ? 's' : '') + ')';
+
+  return {
+    passedFrom: passedFrom,
+    passedTo: passedTo,
+    passedPeriod: passedPeriod,
+    failedSince: failedSince,
+    failedPeriod: failedPeriod,
+    passedMonths: passedMonths,
+    failedMonths: failedMonths
+  };
+}
+
+function readDropouts_() {
+  const sh = ss().getSheetByName(TAB_SCREENER_DROPOUTS);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, Math.min(13, sh.getLastColumn())).getValues();
+  return rows.map((r, idx) => ({
+    idx: idx + 1,
+    sym: String(r[0] || '').trim().toUpperCase(),
+    company: String(r[1] || ''),
+    screenersDropped: String(r[2] || 'Compounder'),
+    passedPeriod: String(r[3] || ''),
+    failedPeriod: String(r[4] || ''),
+    score12m: String(r[5] || ''),
+    ltp: Number(r[6]) || 0,
+    low52w: Number(r[7]) || 0,
+    pe: Number(r[8]) || 0,
+    decision: String(r[9] || 'HOLD'),
+    reason: String(r[10] || ''),
+    lastUpdated: String(r[11] || '')
+  })).filter(d => !!d.sym);
+}
+
+function updateDropoutsSheet_(updatedHistoryMap, curCycles, nowStr) {
+  const existingDropouts = readDropouts_();
+  const existingMap = {};
+  existingDropouts.forEach(d => { existingMap[d.sym] = d; });
+
+  const aiMap = readAI_();
+
+  // Read LivePrices to get stock names & prices
+  const pricesSh = ss().getSheetByName(TAB_PRICES);
+  const pricesMap = {};
+  if (pricesSh && pricesSh.getLastRow() >= 2) {
+    const pRows = pricesSh.getRange(2, 1, pricesSh.getLastRow() - 1, Math.min(9, pricesSh.getLastColumn())).getValues();
+    pRows.forEach(r => {
+      const sym = String(r[0] || '').trim().toUpperCase();
+      if (sym) {
+        pricesMap[sym] = {
+          name: String(r[1] || ''),
+          ltp: Number(r[2]) || 0,
+          high52w: Number(r[4]) || 0,
+          low52w: Number(r[5]) || 0,
+          pe: Number(r[8]) || 0
+        };
+      }
+    });
+  }
+
+  // Determine which screeners are currently active
+  const tCmp = readTab_(TAB_SCREENER_COMPOUNDER);
+  const cmpSet = {};
+  (tCmp.length ? tCmp : readTab_(TAB_SCREENER)).forEach(r => { if (r[0]) cmpSet[String(r[0]).trim().toUpperCase()] = true; });
+  const qltSet = {};
+  readTab_(TAB_SCREENER_QUALITY).forEach(r => { if (r[0]) qltSet[String(r[0]).trim().toUpperCase()] = true; });
+  const mbSet = {};
+  readTab_(TAB_SCREENER_MULTIBAGGER).forEach(r => { if (r[0]) mbSet[String(r[0]).trim().toUpperCase()] = true; });
+
+  const dropoutRows = [];
+  const dropoutList = [];
+
+  const histKeys = Object.keys(updatedHistoryMap || {});
+  histKeys.forEach(sym => {
+    const item = updatedHistoryMap[sym];
+    if (item.status === 'DROPOUT') {
+      const pr = pricesMap[sym] || {};
+      const ltp = pr.ltp || 0;
+      const high52 = pr.high52w || 0;
+      const low52wPct = (high52 > 0 && ltp > 0) ? ((high52 - ltp) / high52 * 100) : 0;
+      const pe = pr.pe || 0;
+      const company = pr.name || sym;
+
+      const timeline = calculateDropoutTimeline_(item.cycles, curCycles || getLast12Cycles_());
+
+      // Determine dropped screeners
+      const droppedList = [];
+      if (!cmpSet[sym]) droppedList.push('Compounder');
+      if (!qltSet[sym] && Object.keys(qltSet).length > 0) droppedList.push('Quality');
+      if (!mbSet[sym] && Object.keys(mbSet).length > 0) droppedList.push('Multibagger');
+      const droppedStr = droppedList.length ? droppedList.join(', ') : 'Compounder';
+
+      const prevRecord = existingMap[sym] || {};
+      const aiCall = (aiMap[sym] && aiMap[sym].suggestion) || prevRecord.decision || 'HOLD';
+      let reason = prevRecord.reason || '';
+      if (!reason) {
+        if (aiMap[sym] && aiMap[sym].rationale) {
+          reason = aiMap[sym].rationale;
+        } else if (low52wPct >= 20) {
+          reason = 'Momentum correction: trading ' + low52wPct.toFixed(1) + '% below 52-week high; missed valuation/growth cut-off.';
+        } else if (pe > 60) {
+          reason = 'Valuation re-rating: elevated P/E (' + pe.toFixed(1) + '); failed earnings growth threshold.';
+        } else {
+          reason = 'Missed ' + droppedStr + ' screening criteria in recent monthly cut-off.';
+        }
+      }
+
+      dropoutRows.push([
+        sym,
+        company,
+        droppedStr,
+        timeline.passedPeriod,
+        timeline.failedPeriod,
+        "'" + item.score,
+        ltp,
+        low52wPct > 0 ? Number(low52wPct.toFixed(1)) : 0,
+        pe > 0 ? Number(pe.toFixed(1)) : 0,
+        aiCall,
+        reason,
+        nowStr
+      ]);
+
+      dropoutList.push({
+        idx: dropoutList.length + 1,
+        sym: sym,
+        company: company,
+        screenersDropped: droppedStr,
+        passedPeriod: timeline.passedPeriod,
+        failedPeriod: timeline.failedPeriod,
+        score12m: item.score,
+        ltp: ltp,
+        low52w: low52wPct,
+        pe: pe,
+        decision: aiCall,
+        reason: reason,
+        lastUpdated: nowStr
+      });
+    }
+  });
+
+  const headers = [
+    'Symbol', 'Company', 'Screeners_Dropped', 'Passed_Period', 'Failed_Period',
+    'Cycles_12M', 'LTP', 'Low_52WH_Pct', 'PE', 'Decision', 'Reason_Diagnosis', 'Last_Updated'
+  ];
+  const sh = getSheet_(TAB_SCREENER_DROPOUTS, headers);
+  sh.clearContents();
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  if (dropoutRows.length) {
+    sh.getRange(2, 6, dropoutRows.length, 1).setNumberFormat('@');
+    sh.getRange(2, 1, dropoutRows.length, headers.length).setValues(dropoutRows);
+  }
+
+  return dropoutList;
+}
+
+function diagnoseDropoutReasons() {
+  const dropouts = readDropouts_();
+  if (!dropouts.length) return { updated: 0, dropouts: [] };
+
+  const sh = ss().getSheetByName(TAB_SCREENER_DROPOUTS);
+  if (!sh) return { updated: 0, dropouts: [] };
+
+  let updatedCount = 0;
+  for (let i = 0; i < dropouts.length; i++) {
+    const d = dropouts[i];
+    const needsAi = !d.reason || d.reason.startsWith('Missed ') || d.reason.startsWith('Momentum correction:');
+    if (needsAi && updatedCount < 5) {
+      const news = fetchStockNews_(d.sym, d.company);
+      const newsStr = news.length ? (' Recent headlines: ' + news.join('; ')) : '';
+      const prompt =
+        'You are an Indian equity analyst. NSE stock: ' + d.sym + ' (' + d.company + '). ' +
+        'Market metrics: LTP ₹' + d.ltp + ', ' + (d.low52w ? d.low52w.toFixed(1) : '0') + '% below 52-week high, PE ' + (d.pe || 'N/A') + '.' +
+        newsStr + '\n' +
+        'This stock previously qualified in ' + d.passedPeriod + ' but dropped out this month (' + d.screenersDropped + '). ' +
+        'In exactly 1 or 2 concise sentences, diagnose the primary business, valuation, or earnings headwind that caused this stock to drop out. Be factual and concise.';
+
+      try {
+        const diag = queryAnyAI_(prompt, 0.2);
+        if (diag && diag.length > 15) {
+          d.reason = diag.trim();
+          sh.getRange(i + 2, 11).setValue(d.reason);
+          sh.getRange(i + 2, 12).setValue(nowIST_());
+          updatedCount++;
+        }
+      } catch (e) {
+        console.error('Diagnosis failed for ' + d.sym + ': ' + e.message);
+      }
+    }
+  }
+
+  return { updated: updatedCount, dropouts: readDropouts_() };
 }
 
 /* ====================== LIVE STOCK NEWS (Google News RSS) ====================== */
@@ -525,6 +767,11 @@ function getInitialData() {
   // calling that full function here (just to get .status) used to read TAB_AI a second time.
   const ai = readAI_();
 
+  let dropouts = readDropouts_();
+  if (!dropouts.length && screenerHistory && Object.keys(screenerHistory).length) {
+    dropouts = updateDropoutsSheet_(screenerHistory, getLast12Cycles_(), nowIST_());
+  }
+
   return {
     p1: p1, p2: p2,
     screener: screener,
@@ -534,6 +781,7 @@ function getInitialData() {
       multibagger: scrMb
     },
     screenerHistory: screenerHistory,
+    dropouts: dropouts,
     prices: prices, ai: ai, watchlist: watchlist, indices: readIndices_(),
     meta: {
       p1Saved: getMeta_('P1_SAVED'), p2Saved: getMeta_('P2_SAVED'),
