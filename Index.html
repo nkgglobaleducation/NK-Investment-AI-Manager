@@ -285,7 +285,8 @@
 
       <div id="excelCaptionBanner" class="hidden" style="background:#f8fafd;border:1px solid #d0ddeb;padding:6px 12px;border-radius:6px;margin-bottom:8px;font-size:12px;font-weight:600;color:var(--navy)"></div>
 
-      <div id="excelSheetPills" class="chipbar" style="margin-bottom:10px"></div>
+      <div id="excelSheetPills" class="chipbar" style="margin-bottom:6px"></div>
+      <div id="excelFilterBar" class="chipbar hidden" style="margin-bottom:10px"></div>
 
       <div class="tblwrap" id="excelTableWrap" style="max-height:70vh;overflow-x:auto">
         <div id="excelEmptyMsg" style="padding:48px 20px;text-align:center;color:var(--mut)">
@@ -1021,6 +1022,20 @@ function showTab(t){
 
 /* ==================== MASTER EXCEL SHEET ==================== */
 let currentExcelSheetName = '';
+let activeExcelFilters = {};
+const EXCEL_FILTER_GROUPS = {
+  E: 'cat',
+  C: 'cat',
+  M: 'cat',
+  P1: 'port',
+  P2: 'port'
+};
+
+function isCellChecked(val) {
+  if (val == null) return false;
+  const s = String(val).trim().toLowerCase();
+  return s !== '' && s !== '-' && s !== '—' && s !== '0' && s !== 'false' && s !== 'null';
+}
 
 function escapeHtml(s){
   if (s == null) return '';
@@ -1062,6 +1077,7 @@ function loadMasterExcel() {
         b.disabled = false;
         b.innerHTML = '📂 Upload Excel Sheet';
         DATA.masterExcel = payload;
+        activeExcelFilters = {};
         currentExcelSheetName = sheetNames[0] || '';
         updateNotes();
         showTab('excel');
@@ -1080,6 +1096,7 @@ function loadMasterExcel() {
             sheets: sheets,
             sheetNames: res.sheetNames
           };
+          activeExcelFilters = {};
           currentExcelSheetName = res.sheetNames[0] || '';
           updateNotes();
           showTab('excel');
@@ -1111,6 +1128,7 @@ function renderMasterExcel(targetSheet) {
   const emptyEl = document.getElementById('excelEmptyMsg');
   const tableEl = document.getElementById('excelTable');
   const pillsEl = document.getElementById('excelSheetPills');
+  const filterBarEl = document.getElementById('excelFilterBar');
   const titleEl = document.getElementById('excelFileTitle');
   const badgeEl = document.getElementById('excelMetaBadge');
   const captionEl = document.getElementById('excelCaptionBanner');
@@ -1119,6 +1137,7 @@ function renderMasterExcel(targetSheet) {
     if (emptyEl) emptyEl.classList.remove('hidden');
     if (tableEl) tableEl.classList.add('hidden');
     if (pillsEl) pillsEl.innerHTML = '';
+    if (filterBarEl) filterBarEl.classList.add('hidden');
     if (captionEl) captionEl.classList.add('hidden');
     if (titleEl) titleEl.textContent = 'Master Sheet';
     if (badgeEl) badgeEl.textContent = 'No data';
@@ -1132,8 +1151,10 @@ function renderMasterExcel(targetSheet) {
 
   // Sheet pills
   if (targetSheet && me.sheetNames.indexOf(targetSheet) > -1) {
+    if (targetSheet !== currentExcelSheetName) activeExcelFilters = {};
     currentExcelSheetName = targetSheet;
   } else if (!currentExcelSheetName || me.sheetNames.indexOf(currentExcelSheetName) === -1) {
+    activeExcelFilters = {};
     currentExcelSheetName = me.sheetNames[0];
   }
 
@@ -1156,11 +1177,13 @@ function renderCurrentSheetTable() {
   const thead = document.getElementById('excelThead');
   const tbody = document.getElementById('excelTbody');
   const captionEl = document.getElementById('excelCaptionBanner');
+  const filterBarEl = document.getElementById('excelFilterBar');
   thead.innerHTML = '';
   tbody.innerHTML = '';
 
   if (!rawRows.length) {
-    captionEl.classList.add('hidden');
+    if (captionEl) captionEl.classList.add('hidden');
+    if (filterBarEl) filterBarEl.classList.add('hidden');
     tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--mut)">Sheet is empty.</td></tr>';
     return;
   }
@@ -1172,12 +1195,14 @@ function renderCurrentSheetTable() {
   const nonBlank0 = row0.filter(c => String(c).trim() !== '');
 
   if (rawRows.length > 1 && nonBlank0.length === 1 && String(row0[0]).length > 5) {
-    captionEl.textContent = String(row0[0]);
-    captionEl.classList.remove('hidden');
+    if (captionEl) {
+      captionEl.textContent = String(row0[0]);
+      captionEl.classList.remove('hidden');
+    }
     headerRowIdx = 1;
     startRowIdx = 2;
   } else {
-    captionEl.classList.add('hidden');
+    if (captionEl) captionEl.classList.add('hidden');
     headerRowIdx = 0;
     startRowIdx = 1;
   }
@@ -1189,10 +1214,48 @@ function renderCurrentSheetTable() {
   }
 
   const headerRow = rawRows[headerRowIdx] || [];
+
+  // Identify column indices for E, C, M, P1, P2
+  const colMap = {};
+  headerRow.forEach((h, i) => {
+    const name = String(h || '').trim().toUpperCase();
+    if (['E', 'C', 'M', 'P1', 'P2'].indexOf(name) > -1) {
+      colMap[name] = i;
+    }
+  });
+
+  // Calculate filter counts
+  const filterCounts = { ALL: 0, E: 0, C: 0, M: 0, P1: 0, P2: 0 };
+  for (let r = startRowIdx; r < rawRows.length; r++) {
+    const row = rawRows[r] || [];
+    if (row.filter(c => String(c).trim() !== '').length === 0) continue;
+    filterCounts.ALL++;
+    ['E', 'C', 'M', 'P1', 'P2'].forEach(k => {
+      if (colMap[k] != null && isCellChecked(row[colMap[k]])) {
+        filterCounts[k]++;
+      }
+    });
+  }
+
+  // Render filter bar
+  const availableFilters = ['E', 'C', 'M', 'P1', 'P2'].filter(k => colMap[k] != null);
+  if (filterBarEl) {
+    if (availableFilters.length > 0) {
+      filterBarEl.classList.remove('hidden');
+      renderExcelFilterChips(availableFilters, filterCounts);
+    } else {
+      filterBarEl.classList.add('hidden');
+    }
+  }
+
   let thHtml = '<tr style="background:var(--head);color:#fff">';
   headerRow.forEach((h, i) => {
     const text = String(h != null ? h : '').trim() || ('Col ' + (i + 1));
-    thHtml += '<th class="l" style="padding:8px 10px;position:sticky;top:0;z-index:2;border-bottom:2px solid var(--orange)">' + escapeHtml(text) + '</th>';
+    const upper = text.toUpperCase();
+    const isCenter = ['E', 'C', 'M', 'P1', 'P2'].indexOf(upper) > -1;
+    const alignClass = isCenter ? '' : 'l';
+    const alignStyle = isCenter ? 'text-align:center;width:44px;' : '';
+    thHtml += '<th class="' + alignClass + '" style="padding:8px 8px;position:sticky;top:0;z-index:2;border-bottom:2px solid var(--orange);' + alignStyle + '">' + escapeHtml(text) + '</th>';
   });
   thHtml += '</tr>';
   thead.innerHTML = thHtml;
@@ -1202,13 +1265,25 @@ function renderCurrentSheetTable() {
     const row = rawRows[r] || [];
     if (row.filter(c => String(c).trim() !== '').length === 0) continue;
 
-    trHtml += '<tr class="excel-data-row">';
+    let dataAttrs = '';
+    ['E', 'C', 'M', 'P1', 'P2'].forEach(k => {
+      if (colMap[k] != null) {
+        const hasFlag = isCellChecked(row[colMap[k]]) ? '1' : '0';
+        dataAttrs += ' data-' + k.toLowerCase() + '="' + hasFlag + '"';
+      }
+    });
+
+    trHtml += '<tr class="excel-data-row"' + dataAttrs + '>';
     for (let c = 0; c < headerRow.length; c++) {
       const val = row[c] != null ? String(row[c]).trim() : '';
-      let cellDisplay = escapeHtml(val);
+      const colName = String(headerRow[c] || '').trim().toUpperCase();
+      const isCenter = ['E', 'C', 'M', 'P1', 'P2'].indexOf(colName) > -1;
+      const alignClass = isCenter ? '' : 'l';
+      const alignStyle = isCenter ? 'text-align:center;' : '';
 
+      let cellDisplay = escapeHtml(val);
       if (val === '✓') {
-        cellDisplay = '<span class="badge b-buy">✓</span>';
+        cellDisplay = '<span class="badge b-buy" style="font-size:10px">✓</span>';
       } else if (val === 'IN') {
         cellDisplay = '<span class="badge b-buy">IN</span>';
       } else if (val === 'OUT') {
@@ -1217,11 +1292,11 @@ function renderCurrentSheetTable() {
         cellDisplay = '<span class="badge b-hold">P1</span>';
       } else if (val === 'P2') {
         cellDisplay = '<span class="badge b-rally">P2</span>';
-      } else if (c === 1 && /^[A-Z0-9&-]{2,15}$/.test(val)) {
+      } else if ((colName === 'STOCK' || c === 1) && /^[A-Z0-9&-]{2,15}$/.test(val)) {
         cellDisplay = '<b class="sym">' + escapeHtml(val) + '</b>';
       }
 
-      trHtml += '<td class="l" style="padding:6px 10px;border-bottom:1px solid #edf0f5;white-space:normal">' + cellDisplay + '</td>';
+      trHtml += '<td class="' + alignClass + '" style="padding:6px 8px;border-bottom:1px solid #edf0f5;white-space:normal;' + alignStyle + '">' + cellDisplay + '</td>';
     }
     trHtml += '</tr>';
   }
@@ -1230,13 +1305,83 @@ function renderCurrentSheetTable() {
   filterMasterExcelTable();
 }
 
+function renderExcelFilterChips(availableFilters, counts) {
+  const filterBarEl = document.getElementById('excelFilterBar');
+  if (!filterBarEl) return;
+
+  const anySel = Object.keys(activeExcelFilters).length > 0;
+  const defs = [['ALL', 'All (' + (counts.ALL || 0) + ')']];
+  availableFilters.forEach(k => {
+    defs.push([k, k + ' (' + (counts[k] || 0) + ')']);
+  });
+
+  const chipsHtml = defs.map(d => {
+    const on = (d[0] === 'ALL') ? !anySel : !!activeExcelFilters[d[0]];
+    return '<button class="chip ' + (on ? 'active' : '') + '" onclick="toggleExcelFilter(\'' + d[0] + '\')">' +
+           d[1] + '</button>';
+  }).join('');
+
+  filterBarEl.innerHTML = chipsHtml + '<span id="excelFilterNote" class="filternote"></span>';
+}
+
+function toggleExcelFilter(f) {
+  if (f === 'ALL') {
+    activeExcelFilters = {};
+  } else if (activeExcelFilters[f]) {
+    delete activeExcelFilters[f];
+  } else {
+    activeExcelFilters[f] = true;
+  }
+
+  // Update chip active classes
+  const filterBarEl = document.getElementById('excelFilterBar');
+  if (filterBarEl) {
+    const anySel = Object.keys(activeExcelFilters).length > 0;
+    filterBarEl.querySelectorAll('.chip').forEach(btn => {
+      const txt = btn.textContent.split(' ')[0];
+      const on = (txt === 'All') ? !anySel : !!activeExcelFilters[txt];
+      btn.classList.toggle('active', on);
+    });
+  }
+
+  filterMasterExcelTable();
+}
+
 function filterMasterExcelTable() {
   const query = (document.getElementById('excelSearchInput').value || '').trim().toLowerCase();
   const rows = document.querySelectorAll('#excelTbody tr.excel-data-row');
-  rows.forEach(tr => {
-    const match = !query || tr.textContent.toLowerCase().indexOf(query) > -1;
-    tr.style.display = match ? '' : 'none';
+  const selKeys = Object.keys(activeExcelFilters);
+
+  const byGroup = {};
+  selKeys.forEach(k => {
+    const g = EXCEL_FILTER_GROUPS[k] || k;
+    (byGroup[g] = byGroup[g] || []).push(k);
   });
+
+  let visibleCount = 0;
+  rows.forEach(tr => {
+    const textMatch = !query || tr.textContent.toLowerCase().indexOf(query) > -1;
+
+    let filterMatch = true;
+    if (selKeys.length > 0) {
+      filterMatch = Object.keys(byGroup).every(g => {
+        return byGroup[g].some(k => tr.getAttribute('data-' + k.toLowerCase()) === '1');
+      });
+    }
+
+    const show = textMatch && filterMatch;
+    tr.style.display = show ? '' : 'none';
+    if (show) visibleCount++;
+  });
+
+  const noteEl = document.getElementById('excelFilterNote');
+  if (noteEl) {
+    if (selKeys.length > 0 || query) {
+      noteEl.textContent = 'Showing ' + visibleCount + ' of ' + rows.length;
+    } else {
+      noteEl.textContent = '';
+    }
+  }
 }
 
 function exportCurrentExcelSheet() {
