@@ -334,35 +334,46 @@ function uploadMasterExcel(payload) {
 }
 
 function readMasterExcel_() {
-  const saved = getMeta_('MASTER_EXCEL_SAVED');
-  if (!saved) return { filename: '', saved: '', sheets: {}, sheetNames: [] };
-
-  const filename = getMeta_('MASTER_EXCEL_FILENAME') || 'Uploaded_Excel.xlsx';
-  let sheetNames = [];
   try {
-    sheetNames = JSON.parse(getMeta_('MASTER_EXCEL_SHEETS') || '[]');
-  } catch (e) {
-    sheetNames = [];
-  }
+    const saved = getMeta_('MASTER_EXCEL_SAVED');
+    if (!saved) return { filename: '', saved: '', sheets: {}, sheetNames: [] };
 
-  const sheets = {};
-  sheetNames.forEach(sName => {
-    const cleanName = String(sName).replace(/[\*\?\:\/\\\[\]\']/g, '_').trim().slice(0, 40);
-    const tabName = TAB_PREFIX_MASTER + cleanName;
-    const sh = ss().getSheetByName(tabName);
-    if (sh && sh.getLastRow() >= 1 && sh.getLastColumn() >= 1) {
-      sheets[sName] = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getValues();
-    } else {
-      sheets[sName] = [];
+    const filename = getMeta_('MASTER_EXCEL_FILENAME') || 'Uploaded_Excel.xlsx';
+    let sheetNames = [];
+    try {
+      sheetNames = JSON.parse(getMeta_('MASTER_EXCEL_SHEETS') || '[]');
+    } catch (e) {
+      sheetNames = [];
     }
-  });
 
-  return {
-    filename: filename,
-    saved: saved,
-    sheets: sheets,
-    sheetNames: sheetNames
-  };
+    const sheets = {};
+    sheetNames.forEach(sName => {
+      try {
+        const cleanName = String(sName).replace(/[\*\?\:\/\\\[\]\']/g, '_').trim().slice(0, 40);
+        const tabName = TAB_PREFIX_MASTER + cleanName;
+        const sh = ss().getSheetByName(tabName);
+        if (sh && sh.getLastRow() >= 1 && sh.getLastColumn() >= 1) {
+          // Use getDisplayValues() so all values are pure Strings - NEVER Date objects or formulas!
+          const raw = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
+          sheets[sName] = raw.map(row => row.map(cell => (cell != null ? String(cell) : '')));
+        } else {
+          sheets[sName] = [];
+        }
+      } catch (errInner) {
+        sheets[sName] = [];
+      }
+    });
+
+    return {
+      filename: String(filename),
+      saved: String(saved),
+      sheets: sheets,
+      sheetNames: sheetNames
+    };
+  } catch (err) {
+    Logger.log('readMasterExcel_ error: ' + err.message);
+    return { filename: '', saved: '', sheets: {}, sheetNames: [] };
+  }
 }
 
 function getAllScreenedSymbols_() {

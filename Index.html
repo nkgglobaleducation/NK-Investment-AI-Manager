@@ -409,11 +409,17 @@ window.onload = () => {
     rebuild();
     if (d.masterExcel && d.masterExcel.sheetNames && d.masterExcel.sheetNames.length) {
       currentExcelSheetName = d.masterExcel.sheetNames[0];
+      renderMasterExcel();
     }
     // If a server-side analysis is already running (even from another device), resume live progress
     if (d.aiStatus && d.aiStatus.running) startPolling();
     else if (d.aiStatus && d.aiStatus.msg) setStatus(d.aiStatus.msg);
-  }).withFailureHandler(err => setStatus('⚠ ' + err.message)).getInitialData();
+  }).withFailureHandler(err => {
+    const msg = '⚠ Error loading saved data: ' + (err && (err.message || err));
+    const rNote = document.getElementById('restoreNote');
+    if (rNote) { rNote.textContent = msg; rNote.style.color = '#ff8e8e'; }
+    setStatus(msg);
+  }).getInitialData();
 };
 
 function updateNotes(){
