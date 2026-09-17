@@ -173,7 +173,7 @@
     <div class="side-card">
       <h3>📋 MASTER EXCEL SHEET</h3>
       <label>Master / Basket Sheet (.xlsx, .xls, .csv)</label>
-      <input type="file" id="fileMasterExcel" accept=".xlsx,.xls,.csv">
+      <input type="file" id="fileMasterExcel" accept=".xlsx,.xls,.csv" onchange="loadMasterExcel()">
       <div class="side-note" id="noteMasterExcel">No data yet</div>
       <button class="btn btn-load" id="btnMasterExcel" onclick="loadMasterExcel()" style="margin-top:8px">📂 Upload Excel Sheet</button>
     </div>
@@ -350,24 +350,36 @@
           <span style="font-size:15px;font-weight:700;color:var(--navy)">📑 <span id="excelFileTitle">Master Sheet</span></span>
           <span class="badge b-hold" id="excelMetaBadge" style="font-size:11px">No data</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <input type="text" id="excelSearchInput" placeholder="🔍 Search this sheet..." oninput="filterMasterExcelTable()" style="padding:6px 10px;border:1px solid var(--line);border-radius:4px;font-size:12px;width:220px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="position:relative;display:inline-flex;align-items:center">
+            <input type="text" id="excelSearchInput" placeholder="🔍 Search this sheet..." oninput="filterMasterExcelTable()" style="padding:6px 28px 6px 10px;border:1px solid var(--line);border-radius:4px;font-size:12px;width:210px">
+            <span id="excelSearchClear" onclick="clearExcelSearch()" style="position:absolute;right:8px;cursor:pointer;color:var(--mut);font-size:12px;display:none" title="Clear search">✕</span>
+          </div>
+          <button class="chip" onclick="document.getElementById('fileMasterExcel').click()" style="background:#0284c7;color:#fff;border-color:#0284c7;font-weight:600;margin-left:0;cursor:pointer" title="Upload new Master Excel or CSV file">📁 Upload File</button>
           <button class="chip chip-export" onclick="exportCurrentExcelSheet()" style="margin-left:0">⬇ Export CSV</button>
         </div>
       </div>
 
-      <div id="excelCaptionBanner" class="hidden" style="background:#f8fafd;border:1px solid #d0ddeb;padding:6px 12px;border-radius:6px;margin-bottom:8px;font-size:12px;font-weight:600;color:var(--navy)"></div>
+      <div id="excelCaptionBanner" class="hidden" style="background:#f8fafc;border:1px solid #cbd5e1;padding:10px 14px;border-radius:8px;margin-bottom:10px;">
+        <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="excelBannerTitle" style="font-size:13.5px;font-weight:700;color:var(--navy)"></span>
+          </div>
+          <span id="excelBannerBadge" class="badge b-hold" style="font-size:11px"></span>
+        </div>
+        <div id="excelBannerSubtitle" style="font-size:11.5px;color:#475569;margin-top:4px;font-weight:500;line-height:1.4"></div>
+      </div>
 
-      <div id="excelSheetPills" class="chipbar" style="margin-bottom:6px"></div>
+      <div id="excelSheetPills" class="chipbar" style="margin-bottom:8px"></div>
       <div id="excelFilterBar" class="chipbar hidden" style="margin-bottom:10px"></div>
 
-      <div class="tblwrap" id="excelTableWrap" style="max-height:70vh;overflow-x:auto">
+      <div class="tblwrap" id="excelTableWrap" style="max-height:72vh;overflow:auto;border:1px solid var(--line);border-radius:6px">
         <div id="excelEmptyMsg" style="padding:48px 20px;text-align:center;color:var(--mut)">
           <div style="font-size:36px;margin-bottom:10px">📊</div>
           <b style="font-size:14px;color:var(--navy)">No Excel sheet data loaded yet</b><br>
-          <span style="font-size:12px;margin-top:4px;display:inline-block">Upload your Master Portfolio Excel file (<code>.xlsx</code> / <code>.csv</code>) using the upload option in the sidebar.</span>
+          <span style="font-size:12px;margin-top:4px;display:inline-block">Upload your Master Portfolio Excel file (<code>.xlsx</code> / <code>.csv</code>) using the button above or in the sidebar.</span>
         </div>
-        <table id="excelTable" class="hidden" style="table-layout:auto;min-width:100%">
+        <table id="excelTable" class="hidden" style="table-layout:auto;min-width:100%;border-collapse:collapse">
           <thead id="excelThead"></thead>
           <tbody id="excelTbody"></tbody>
         </table>
@@ -1304,12 +1316,24 @@ function sortMasterExcelBy(colIdx) {
 }
 
 const EXCEL_FILTER_GROUPS = {
+  P1: 'port',
+  P2: 'port',
+  IN: 'status',
+  OUT: 'status',
   E: 'cat',
   C: 'cat',
   M: 'cat',
-  P1: 'port',
-  P2: 'port'
+  BUY: 'call',
+  HOLD: 'call',
+  RALLY: 'call',
+  EXIT: 'call'
 };
+
+function clearExcelSearch() {
+  const el = document.getElementById('excelSearchInput');
+  if (el) el.value = '';
+  filterMasterExcelTable();
+}
 
 function isCellChecked(val) {
   if (val == null) return false;
@@ -1440,10 +1464,19 @@ function renderMasterExcel(targetSheet) {
 
   pillsEl.innerHTML = me.sheetNames.map(s => {
     const rows = (me.sheets && me.sheets[s]) || [];
-    const count = rows.length > 1 ? (rows.length - 1) : rows.length;
+    let count = rows.length > 1 ? (rows.length - 1) : rows.length;
+
+    let icon = '📄';
+    const sUp = s.toUpperCase();
+    if (sUp.indexOf('IN') > -1) icon = '✅';
+    else if (sUp.indexOf('OUT') > -1) icon = '⛔';
+    else if (sUp.indexOf('ETF') > -1) icon = '📊';
+    else if (sUp.indexOf('SUMMARY') > -1) icon = '📋';
+    else if (sUp.indexOf('RULE') > -1) icon = '📜';
+
     const active = (s === currentExcelSheetName) ? 'active' : '';
-    return '<div class="chip ' + active + '" onclick="renderMasterExcel(\'' + s.replace(/'/g, "\\'") + '\')">' +
-           escapeHtml(s) + ' (' + count + ')</div>';
+    return '<div class="chip ' + active + '" onclick="renderMasterExcel(\'' + s.replace(/'/g, "\\'") + '\')" style="cursor:pointer;font-weight:600">' +
+           icon + ' ' + escapeHtml(s) + ' <span style="font-size:11px;opacity:.85;margin-left:3px">(' + count + ')</span></div>';
   }).join('');
 
   renderCurrentSheetTable();
@@ -1468,57 +1501,124 @@ function renderCurrentSheetTable() {
     return;
   }
 
-  // Detect single-cell title row (e.g. ['MASTER IN — 50 STOCK EQUITY BASKET'])
-  let startRowIdx = 0;
-  let headerRowIdx = 0;
-  const row0 = rawRows[0] || [];
-  const nonBlank0 = row0.filter(c => String(c).trim() !== '');
+  // Robust scan for title / subtitle banner and the actual header row
+  let titleText = '';
+  let subtitleText = '';
+  let headerRowIdx = -1;
 
-  if (rawRows.length > 1 && nonBlank0.length === 1 && String(row0[0]).length > 5) {
-    if (captionEl) {
-      captionEl.textContent = String(row0[0]);
-      captionEl.classList.remove('hidden');
+  for (let r = 0; r < Math.min(rawRows.length, 10); r++) {
+    const row = rawRows[r] || [];
+    const nonBlank = row.map(c => String(c != null ? c : '').trim()).filter(Boolean);
+    if (nonBlank.length === 0) continue;
+
+    if (nonBlank.length === 1) {
+      if (!titleText) titleText = nonBlank[0];
+      else if (!subtitleText) subtitleText = nonBlank[0];
+      continue;
     }
-    headerRowIdx = 1;
-    startRowIdx = 2;
-  } else {
-    if (captionEl) captionEl.classList.add('hidden');
+
+    const upperList = nonBlank.map(s => s.toUpperCase());
+    const isHeaderCandidate = nonBlank.length >= 3 ||
+      upperList.some(k => ['STOCK', 'SYMBOL', 'INSTRUMENT', 'ETF', 'TICKER', 'METRIC', 'RULE #', 'RULE'].indexOf(k) > -1);
+
+    if (isHeaderCandidate) {
+      headerRowIdx = r;
+      break;
+    }
+  }
+
+  if (headerRowIdx === -1) {
     headerRowIdx = 0;
-    startRowIdx = 1;
   }
-
-  // If there's an empty row between title and headers
-  if (rawRows.length > startRowIdx && (rawRows[headerRowIdx] || []).filter(c => String(c).trim() !== '').length === 0) {
-    headerRowIdx++;
-    startRowIdx++;
-  }
-
+  const startRowIdx = headerRowIdx + 1;
   const headerRow = rawRows[headerRowIdx] || [];
 
-  // Identify column indices for E, C, M, P1, P2
+  // Extract clean data rows
+  const dataRows = [];
+  for (let r = startRowIdx; r < rawRows.length; r++) {
+    const row = rawRows[r] || [];
+    if (row.filter(c => String(c != null ? c : '').trim() !== '').length === 0) continue;
+    dataRows.push(row);
+  }
+
+  // Update Caption Banner
+  if (captionEl) {
+    if (titleText || subtitleText) {
+      captionEl.classList.remove('hidden');
+      const bTitle = document.getElementById('excelBannerTitle');
+      const bSub = document.getElementById('excelBannerSubtitle');
+      const bBadge = document.getElementById('excelBannerBadge');
+      if (bTitle) bTitle.textContent = titleText || currentExcelSheetName;
+      if (bSub) {
+        bSub.textContent = subtitleText || '';
+        bSub.style.display = subtitleText ? 'block' : 'none';
+      }
+      if (bBadge) bBadge.textContent = dataRows.length + ' items';
+    } else {
+      captionEl.classList.add('hidden');
+    }
+  }
+
+  // Map header columns
   const colMap = {};
   headerRow.forEach((h, i) => {
     const name = String(h || '').trim().toUpperCase();
-    if (['E', 'C', 'M', 'P1', 'P2'].indexOf(name) > -1) {
-      colMap[name] = i;
-    }
+    if (name) colMap[name] = i;
   });
 
-  // Calculate filter counts
-  const filterCounts = { ALL: 0, E: 0, C: 0, M: 0, P1: 0, P2: 0 };
-  for (let r = startRowIdx; r < rawRows.length; r++) {
-    const row = rawRows[r] || [];
-    if (row.filter(c => String(c).trim() !== '').length === 0) continue;
-    filterCounts.ALL++;
-    ['E', 'C', 'M', 'P1', 'P2'].forEach(k => {
-      if (colMap[k] != null && isCellChecked(row[colMap[k]])) {
-        filterCounts[k]++;
-      }
-    });
-  }
+  const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
+  const qualCol = colMap['QUALIFICATION'] != null ? colMap['QUALIFICATION'] : colMap['QUAL'];
+  const decCol = colMap['AI CALL'] != null ? colMap['AI CALL'] : (colMap['DECISION'] != null ? colMap['DECISION'] : colMap['CALL']);
+  const eCol = colMap['E'] != null ? colMap['E'] : colMap['ETF'];
+  const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
+  const mCol = colMap['M'] != null ? colMap['M'] : colMap['MB'];
+  const p1Col = colMap['P1'];
+  const p2Col = colMap['P2'];
 
-  // Render filter bar
-  const availableFilters = ['E', 'C', 'M', 'P1', 'P2'].filter(k => colMap[k] != null);
+  // Compute filter counts
+  const filterCounts = {
+    ALL: dataRows.length,
+    P1: 0, P2: 0, IN: 0, OUT: 0,
+    E: 0, C: 0, M: 0,
+    BUY: 0, HOLD: 0, RALLY: 0, EXIT: 0
+  };
+
+  dataRows.forEach(row => {
+    const bVal = bucketCol != null ? String(row[bucketCol] || '').trim().toUpperCase() : '';
+    const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
+    const dVal = decCol != null ? String(row[decCol] || '').trim().toUpperCase() : '';
+
+    const isP1 = bVal === 'P1' || (p1Col != null && isCellChecked(row[p1Col]));
+    const isP2 = bVal === 'P2' || (p2Col != null && isCellChecked(row[p2Col]));
+    const isIN = bVal === 'IN' || dVal === 'IN';
+    const isOUT = bVal === 'OUT' || dVal === 'OUT';
+
+    const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
+    const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
+    const isM = (mCol != null && isCellChecked(row[mCol])) || qVal.indexOf('M') > -1;
+
+    const isBuy = dVal.indexOf('BUY') > -1;
+    const isHold = dVal.indexOf('HOLD') > -1;
+    const isRally = dVal.indexOf('RALLY') > -1;
+    const isExit = dVal.indexOf('EXIT') > -1;
+
+    if (isP1) filterCounts.P1++;
+    if (isP2) filterCounts.P2++;
+    if (isIN) filterCounts.IN++;
+    if (isOUT) filterCounts.OUT++;
+    if (isE) filterCounts.E++;
+    if (isC) filterCounts.C++;
+    if (isM) filterCounts.M++;
+    if (isBuy) filterCounts.BUY++;
+    if (isHold) filterCounts.HOLD++;
+    if (isRally) filterCounts.RALLY++;
+    if (isExit) filterCounts.EXIT++;
+  });
+
+  const availableFilters = ['P1', 'P2', 'IN', 'OUT', 'E', 'C', 'M', 'BUY', 'HOLD', 'RALLY', 'EXIT'].filter(k => {
+    return filterCounts[k] > 0;
+  });
+
   if (filterBarEl) {
     if (availableFilters.length > 0) {
       filterBarEl.classList.remove('hidden');
@@ -1528,34 +1628,39 @@ function renderCurrentSheetTable() {
     }
   }
 
-  let thHtml = '<tr style="background:var(--head);color:#fff">';
+  // Header row generation
+  let thHtml = '<tr style="background:#1e293b;color:#f8fafc">';
   headerRow.forEach((h, i) => {
     const text = String(h != null ? h : '').trim() || ('Col ' + (i + 1));
     const upper = text.toUpperCase();
-    const isCenter = ['E', 'C', 'M', 'P1', 'P2'].indexOf(upper) > -1;
-    const alignClass = isCenter ? '' : 'l';
-    const alignStyle = isCenter ? 'text-align:center;width:44px;' : '';
+
+    let alignClass = 'l';
+    let alignStyle = '';
+
+    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'M', 'P1', 'P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'AI CALL', 'DECISION'].indexOf(upper) > -1) {
+      alignClass = '';
+      alignStyle = 'text-align:center;';
+    } else if (['QTY', 'PE (X)', 'MCAP (₹ CR)', 'PE', 'LTP', 'AVG', 'INV', 'CUR', 'P&L', 'NET%', 'DAY%', 'VALUE', 'STOCKS', '% OF 60'].indexOf(upper) > -1) {
+      alignClass = 'r';
+      alignStyle = 'text-align:right;';
+    }
+
     const isSorted = excelSortCol === i;
-    const sortIcon = isSorted ? (excelSortDir > 0 ? ' <span style="color:var(--orange)">↑</span>' : ' <span style="color:var(--orange)">↓</span>') : ' <span class="arr" style="opacity:.6;font-size:8.5px">⇅</span>';
-    thHtml += '<th class="' + alignClass + '" onclick="sortMasterExcelBy(' + i + ')" style="padding:8px 8px;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;border-bottom:2px solid var(--orange);' + alignStyle + '">' + escapeHtml(text) + sortIcon + '</th>';
+    const sortIcon = isSorted ? (excelSortDir > 0 ? ' <span style="color:var(--orange);font-weight:900">↑</span>' : ' <span style="color:var(--orange);font-weight:900">↓</span>') : ' <span class="arr" style="opacity:.5;font-size:8.5px">⇅</span>';
+
+    thHtml += '<th class="' + alignClass + '" onclick="sortMasterExcelBy(' + i + ')" style="padding:9px 10px;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;border-bottom:2px solid var(--orange);font-size:11.5px;font-weight:700;letter-spacing:0.3px;white-space:nowrap;' + alignStyle + '">' + escapeHtml(text) + sortIcon + '</th>';
   });
   thHtml += '</tr>';
   thead.innerHTML = thHtml;
 
-  const dataRows = [];
-  for (let r = startRowIdx; r < rawRows.length; r++) {
-    const row = rawRows[r] || [];
-    if (row.filter(c => String(c).trim() !== '').length === 0) continue;
-    dataRows.push(row);
-  }
-
+  // Sorting
   if (excelSortCol != null) {
     dataRows.sort((a, b) => {
       let va = a[excelSortCol] != null ? a[excelSortCol] : '';
       let vb = b[excelSortCol] != null ? b[excelSortCol] : '';
 
-      const na = typeof va === 'number' ? va : parseFloat(String(va).replace(/[%,₹,]/g, '').trim());
-      const nb = typeof vb === 'number' ? vb : parseFloat(String(vb).replace(/[%,₹,]/g, '').trim());
+      const na = typeof va === 'number' ? va : parseFloat(String(va).replace(/[₹,%]/g, '').trim());
+      const nb = typeof vb === 'number' ? vb : parseFloat(String(vb).replace(/[₹,%]/g, '').trim());
 
       if (!isNaN(na) && !isNaN(nb) && String(va).trim() !== '' && String(vb).trim() !== '') {
         return (na - nb) * excelSortDir;
@@ -1564,47 +1669,124 @@ function renderCurrentSheetTable() {
     });
   }
 
+  // Row generation
   let trHtml = '';
   for (let r = 0; r < dataRows.length; r++) {
     const row = dataRows[r] || [];
 
-    let dataAttrs = '';
-    ['E', 'C', 'M', 'P1', 'P2'].forEach(k => {
-      if (colMap[k] != null) {
-        const hasFlag = isCellChecked(row[colMap[k]]) ? '1' : '0';
-        dataAttrs += ' data-' + k.toLowerCase() + '="' + hasFlag + '"';
-      }
-    });
+    const nonBlankCells = row.filter(c => String(c != null ? c : '').trim() !== '');
+    if (nonBlankCells.length > 0 && (nonBlankCells[0] === 'Combined Sector Allocation' || nonBlankCells[0].indexOf('Sector Allocation') > -1)) {
+      trHtml += '<tr style="background:#f1f5f9;border-top:2px solid #cbd5e1;font-weight:700;color:var(--navy)"><td colspan="' + headerRow.length + '" style="padding:8px 10px;font-size:12px">📊 ' + escapeHtml(nonBlankCells[0]) + '</td></tr>';
+      continue;
+    }
 
-    trHtml += '<tr class="excel-data-row"' + dataAttrs + '>';
+    const bVal = bucketCol != null ? String(row[bucketCol] || '').trim().toUpperCase() : '';
+    const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
+    const dVal = decCol != null ? String(row[decCol] || '').trim().toUpperCase() : '';
+
+    const isP1 = bVal === 'P1' || (p1Col != null && isCellChecked(row[p1Col]));
+    const isP2 = bVal === 'P2' || (p2Col != null && isCellChecked(row[p2Col]));
+    const isIN = bVal === 'IN' || dVal === 'IN';
+    const isOUT = bVal === 'OUT' || dVal === 'OUT';
+    const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
+    const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
+    const isM = (mCol != null && isCellChecked(row[mCol])) || qVal.indexOf('M') > -1;
+    const isBuy = dVal.indexOf('BUY') > -1;
+    const isHold = dVal.indexOf('HOLD') > -1;
+    const isRally = dVal.indexOf('RALLY') > -1;
+    const isExit = dVal.indexOf('EXIT') > -1;
+
+    let dataAttrs = ' data-p1="' + (isP1 ? '1' : '0') + '"' +
+                    ' data-p2="' + (isP2 ? '1' : '0') + '"' +
+                    ' data-in="' + (isIN ? '1' : '0') + '"' +
+                    ' data-out="' + (isOUT ? '1' : '0') + '"' +
+                    ' data-e="' + (isE ? '1' : '0') + '"' +
+                    ' data-c="' + (isC ? '1' : '0') + '"' +
+                    ' data-m="' + (isM ? '1' : '0') + '"' +
+                    ' data-buy="' + (isBuy ? '1' : '0') + '"' +
+                    ' data-hold="' + (isHold ? '1' : '0') + '"' +
+                    ' data-rally="' + (isRally ? '1' : '0') + '"' +
+                    ' data-exit="' + (isExit ? '1' : '0') + '"';
+
+    const zebraBg = (r % 2 === 1) ? 'background:#f8fafc;' : 'background:#ffffff;';
+    trHtml += '<tr class="excel-data-row" style="' + zebraBg + '"' + dataAttrs + '>';
+
     for (let c = 0; c < headerRow.length; c++) {
       const val = row[c] != null ? String(row[c]).trim() : '';
       const colName = String(headerRow[c] || '').trim().toUpperCase();
-      const isCenter = ['E', 'C', 'M', 'P1', 'P2'].indexOf(colName) > -1;
-      const alignClass = isCenter ? '' : 'l';
-      const alignStyle = isCenter ? 'text-align:center;' : '';
 
+      let alignClass = 'l';
+      let alignStyle = '';
       let cellDisplay = escapeHtml(val);
-      if (val === '✓') {
-        cellDisplay = '<span class="badge b-buy" style="font-size:10px">✓</span>';
-      } else if (val === 'IN') {
-        cellDisplay = '<span class="badge b-buy">IN</span>';
-      } else if (val === 'OUT') {
-        cellDisplay = '<span class="badge b-exit">OUT</span>';
-      } else if (val === 'P1') {
-        cellDisplay = '<span class="badge b-hold">P1</span>';
-      } else if (val === 'P2') {
-        cellDisplay = '<span class="badge b-rally">P2</span>';
-      } else if ((colName === 'STOCK' || c === 1) && /^[A-Z0-9&-]{2,15}$/.test(val)) {
-        cellDisplay = '<b class="sym">' + escapeHtml(val) + '</b>';
+
+      if (['#', 'NO', 'SL', 'RULE #'].indexOf(colName) > -1) {
+        alignClass = '';
+        alignStyle = 'text-align:center;width:40px;';
+        cellDisplay = '<span style="color:var(--mut);font-weight:600;font-size:11px">' + escapeHtml(val) + '</span>';
+      } else if (['E', 'C', 'M', 'P1', 'P2'].indexOf(colName) > -1) {
+        alignClass = '';
+        alignStyle = 'text-align:center;width:44px;';
+        if (isCellChecked(val)) {
+          cellDisplay = '<span class="badge b-buy" style="font-size:10px;padding:2px 6px">✓</span>';
+        } else {
+          cellDisplay = '<span style="color:#cbd5e1">—</span>';
+        }
+      } else if (colName === 'BUCKET' || colName === 'LATEST PORT' || colName === 'DECISION') {
+        alignClass = '';
+        alignStyle = 'text-align:center;';
+        const u = val.toUpperCase();
+        if (u === 'P1') cellDisplay = '<span class="badge b-hold" style="font-weight:700">P1</span>';
+        else if (u === 'P2') cellDisplay = '<span class="badge b-rally" style="font-weight:700">P2</span>';
+        else if (u === 'IN') cellDisplay = '<span class="badge b-buy" style="font-weight:700">IN</span>';
+        else if (u === 'OUT') cellDisplay = '<span class="badge b-exit" style="font-weight:700">OUT</span>';
+        else if (u === '—' || u === '-' || !u) cellDisplay = '<span style="color:#cbd5e1">—</span>';
+      } else if (colName === 'QUALIFICATION' || colName === 'QUAL') {
+        alignClass = '';
+        alignStyle = 'text-align:center;';
+        const u = val.toUpperCase();
+        if (u === 'C+M') cellDisplay = '<span class="badge" style="background:#e0e7ff;color:#3730a3;font-weight:700;border:1px solid #c7d2fe">C+M</span>';
+        else if (u === 'C') cellDisplay = '<span class="badge" style="background:#ecfdf5;color:#065f46;font-weight:700;border:1px solid #a7f3d0">C</span>';
+        else if (u === 'M') cellDisplay = '<span class="badge" style="background:#fffbeb;color:#92400e;font-weight:700;border:1px solid #fde68a">M</span>';
+        else if (u === 'CONVICTION') cellDisplay = '<span class="badge" style="background:#f3e8ff;color:#6b21a8;font-weight:700;border:1px solid #d8b4fe">★ Conviction</span>';
+        else if (u === '—' || u === '-' || !u) cellDisplay = '<span style="color:#cbd5e1">—</span>';
+      } else if (colName === 'AI CALL' || colName === 'CALL') {
+        alignClass = '';
+        alignStyle = 'text-align:center;';
+        const u = val.toUpperCase();
+        if (u === 'BUY') cellDisplay = '<span class="badge b-buy" style="font-weight:700">BUY</span>';
+        else if (u === 'HOLD') cellDisplay = '<span class="badge b-hold" style="font-weight:700">HOLD</span>';
+        else if (u.indexOf('RALLY') > -1) cellDisplay = '<span class="badge b-rally" style="font-weight:700">SELL ON RALLY</span>';
+        else if (u.indexOf('EXIT') > -1) cellDisplay = '<span class="badge b-exit" style="font-weight:700">EXIT NOW</span>';
+      } else if (colName === 'STOCK' || colName === 'SYMBOL' || colName === 'ETF' || colName === 'INSTRUMENT') {
+        alignClass = 'l';
+        cellDisplay = '<b class="sym" style="font-size:12.5px;color:var(--navy);letter-spacing:0.3px">' + escapeHtml(val) + '</b>';
+      } else if (colName === 'SECTOR') {
+        alignClass = 'l';
+        cellDisplay = val ? ('<span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#f1f5f9;color:#334155;font-size:11px;font-weight:500">' + escapeHtml(val) + '</span>') : '<span style="color:#cbd5e1">—</span>';
+      } else if (['QTY', 'PE (X)', 'MCAP (₹ CR)', 'PE', 'LTP', 'AVG', 'INV', 'CUR', 'P&L', 'NET%', 'DAY%', 'VALUE', 'STOCKS'].indexOf(colName) > -1) {
+        alignClass = 'r';
+        alignStyle = 'text-align:right;font-family:inherit;font-variant-numeric:tabular-nums;';
+        const num = parseFloat(val.replace(/[₹,%]/g, ''));
+        if (!isNaN(num)) {
+          if (colName === 'MCAP (₹ CR)' || colName === 'INV' || colName === 'CUR') {
+            cellDisplay = Math.round(num).toLocaleString('en-IN');
+          } else if (colName === 'PE (X)' || colName === 'PE') {
+            cellDisplay = num.toFixed(1);
+          } else if (colName === 'NET%' || colName === 'DAY%') {
+            const clr = num >= 0 ? '#16a34a' : '#dc2626';
+            cellDisplay = '<span style="color:' + clr + ';font-weight:600">' + (num >= 0 ? '+' : '') + num.toFixed(1) + '%</span>';
+          }
+        }
+      } else if (['MASTER REASON', 'SELECTION BASIS', 'REASON', 'DESCRIPTION', 'IMPLEMENTATION', 'AGREED RULE', 'TREATMENT', 'SOURCE / NOTE'].indexOf(colName) > -1) {
+        alignClass = 'l';
+        alignStyle = 'max-width:320px;min-width:180px;white-space:normal;line-height:1.4;color:#334155;font-size:11.5px;';
       }
 
-      trHtml += '<td class="' + alignClass + '" style="padding:6px 8px;border-bottom:1px solid #edf0f5;white-space:normal;' + alignStyle + '">' + cellDisplay + '</td>';
+      trHtml += '<td class="' + alignClass + '" style="padding:6px 9px;border-bottom:1px solid #edf0f5;' + alignStyle + '">' + cellDisplay + '</td>';
     }
     trHtml += '</tr>';
   }
   tbody.innerHTML = trHtml;
-
   filterMasterExcelTable();
 }
 
@@ -1615,16 +1797,19 @@ function renderExcelFilterChips(availableFilters, counts) {
   const anySel = Object.keys(activeExcelFilters).length > 0;
   const defs = [['ALL', 'All (' + (counts.ALL || 0) + ')']];
   availableFilters.forEach(k => {
-    defs.push([k, k + ' (' + (counts[k] || 0) + ')']);
+    let label = k;
+    if (k === 'RALLY') label = 'Sell on Rally';
+    else if (k === 'EXIT') label = 'Exit';
+    defs.push([k, label + ' (' + (counts[k] || 0) + ')']);
   });
 
   const chipsHtml = defs.map(d => {
     const on = (d[0] === 'ALL') ? !anySel : !!activeExcelFilters[d[0]];
     return '<button class="chip ' + (on ? 'active' : '') + '" onclick="toggleExcelFilter(\'' + d[0] + '\')">' +
-           d[1] + '</button>';
+           escapeHtml(d[1]) + '</button>';
   }).join('');
 
-  filterBarEl.innerHTML = chipsHtml + '<span id="excelFilterNote" class="filternote"></span>';
+  filterBarEl.innerHTML = chipsHtml + '<span id="excelFilterNote" class="filternote" style="font-weight:600;color:var(--navy);margin-left:8px"></span>';
 }
 
 function toggleExcelFilter(f) {
@@ -1652,6 +1837,9 @@ function toggleExcelFilter(f) {
 
 function filterMasterExcelTable() {
   const query = (document.getElementById('excelSearchInput').value || '').trim().toLowerCase();
+  const clearBtn = document.getElementById('excelSearchClear');
+  if (clearBtn) clearBtn.style.display = query ? 'block' : 'none';
+
   const rows = document.querySelectorAll('#excelTbody tr.excel-data-row');
   const selKeys = Object.keys(activeExcelFilters);
 
