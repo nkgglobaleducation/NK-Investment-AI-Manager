@@ -1318,15 +1318,12 @@ function sortMasterExcelBy(colIdx) {
 const EXCEL_FILTER_GROUPS = {
   P1: 'port',
   P2: 'port',
+  NONPORT: 'port',
   IN: 'status',
   OUT: 'status',
   E: 'cat',
   C: 'cat',
-  M: 'cat',
-  BUY: 'call',
-  HOLD: 'call',
-  RALLY: 'call',
-  EXIT: 'call'
+  M: 'cat'
 };
 
 function clearExcelSearch() {
@@ -1559,6 +1556,38 @@ function renderCurrentSheetTable() {
     }
   }
 
+  // Excluded columns per user requirement (unneeded analytics/audit fields)
+  const EXCLUDED_MASTER_COLUMNS = [
+    'QTY',
+    'QUANTITY',
+    'PE (X)',
+    'PE',
+    'MCAP (₹ CR)',
+    'MCAP',
+    'MARKET CAP',
+    'AI CALL',
+    'CALL',
+    'MASTER REASON',
+    'SELECTION BASIS',
+    'MASTER SOURCE',
+    'LATEST CSV SOURCE'
+  ];
+
+  // Identify visible/rendered columns
+  const renderedColumns = [];
+  headerRow.forEach((h, i) => {
+    const text = String(h != null ? h : '').trim();
+    if (!text) return;
+    const upper = text.toUpperCase();
+    if (EXCLUDED_MASTER_COLUMNS.indexOf(upper) === -1) {
+      renderedColumns.push({
+        origIndex: i,
+        name: text,
+        upper: upper
+      });
+    }
+  });
+
   // Map header columns
   const colMap = {};
   headerRow.forEach((h, i) => {
@@ -1567,8 +1596,9 @@ function renderCurrentSheetTable() {
   });
 
   const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
+  const portCol = colMap['LATEST PORT'] != null ? colMap['LATEST PORT'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['BUCKET']);
+  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
   const qualCol = colMap['QUALIFICATION'] != null ? colMap['QUALIFICATION'] : colMap['QUAL'];
-  const decCol = colMap['AI CALL'] != null ? colMap['AI CALL'] : (colMap['DECISION'] != null ? colMap['DECISION'] : colMap['CALL']);
   const eCol = colMap['E'] != null ? colMap['E'] : colMap['ETF'];
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
   const mCol = colMap['M'] != null ? colMap['M'] : colMap['MB'];
@@ -1578,45 +1608,57 @@ function renderCurrentSheetTable() {
   // Compute filter counts
   const filterCounts = {
     ALL: dataRows.length,
-    P1: 0, P2: 0, IN: 0, OUT: 0,
-    E: 0, C: 0, M: 0,
-    BUY: 0, HOLD: 0, RALLY: 0, EXIT: 0
+    P1: 0,
+    P2: 0,
+    NONPORT: 0,
+    E: 0,
+    C: 0,
+    M: 0
   };
 
   dataRows.forEach(row => {
     const bVal = bucketCol != null ? String(row[bucketCol] || '').trim().toUpperCase() : '';
+    const portVal = portCol != null ? String(row[portCol] || '').trim().toUpperCase() : '';
+    const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
-    const dVal = decCol != null ? String(row[decCol] || '').trim().toUpperCase() : '';
 
-    const isP1 = bVal === 'P1' || (p1Col != null && isCellChecked(row[p1Col]));
-    const isP2 = bVal === 'P2' || (p2Col != null && isCellChecked(row[p2Col]));
-    const isIN = bVal === 'IN' || dVal === 'IN';
-    const isOUT = bVal === 'OUT' || dVal === 'OUT';
+    const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
+    const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
+
+    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h.sym === sym && h.qty > 0) : false;
+    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h.sym === sym && h.qty > 0) : false;
+
+    let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
+    let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
+
+    if (isP1 && isP2) {
+      if (bVal === 'P1' || hasP1Col) isP2 = false;
+      else if (bVal === 'P2' || hasP2Col) isP1 = false;
+      else if (portVal === 'P1') isP2 = false;
+      else if (portVal === 'P2') isP1 = false;
+    }
+
+    const isNonPort = !isP1 && !isP2;
 
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
     const isM = (mCol != null && isCellChecked(row[mCol])) || qVal.indexOf('M') > -1;
 
-    const isBuy = dVal.indexOf('BUY') > -1;
-    const isHold = dVal.indexOf('HOLD') > -1;
-    const isRally = dVal.indexOf('RALLY') > -1;
-    const isExit = dVal.indexOf('EXIT') > -1;
-
     if (isP1) filterCounts.P1++;
     if (isP2) filterCounts.P2++;
-    if (isIN) filterCounts.IN++;
-    if (isOUT) filterCounts.OUT++;
+    if (isNonPort) filterCounts.NONPORT++;
     if (isE) filterCounts.E++;
     if (isC) filterCounts.C++;
     if (isM) filterCounts.M++;
-    if (isBuy) filterCounts.BUY++;
-    if (isHold) filterCounts.HOLD++;
-    if (isRally) filterCounts.RALLY++;
-    if (isExit) filterCounts.EXIT++;
   });
 
-  const availableFilters = ['P1', 'P2', 'IN', 'OUT', 'E', 'C', 'M', 'BUY', 'HOLD', 'RALLY', 'EXIT'].filter(k => {
-    return filterCounts[k] > 0;
+  const availableFilters = [];
+  const hasStocks = stockCol != null || bucketCol != null || p1Col != null || p2Col != null;
+  if (hasStocks) {
+    availableFilters.push('P1', 'P2', 'NONPORT');
+  }
+  ['E', 'C', 'M'].forEach(k => {
+    if (filterCounts[k] > 0) availableFilters.push(k);
   });
 
   if (filterBarEl) {
@@ -1630,19 +1672,17 @@ function renderCurrentSheetTable() {
 
   // Header row generation
   let thHtml = '<tr style="background:#1e293b;color:#f8fafc">';
-  headerRow.forEach((h, i) => {
-    const text = String(h != null ? h : '').trim() || ('Col ' + (i + 1));
-    const upper = text.toUpperCase();
+  renderedColumns.forEach(col => {
+    const i = col.origIndex;
+    const text = col.name;
+    const upper = col.upper;
 
     let alignClass = 'l';
     let alignStyle = '';
 
-    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'M', 'P1', 'P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'AI CALL', 'DECISION'].indexOf(upper) > -1) {
+    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'M', 'P1', 'P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'DECISION'].indexOf(upper) > -1) {
       alignClass = '';
       alignStyle = 'text-align:center;';
-    } else if (['QTY', 'PE (X)', 'MCAP (₹ CR)', 'PE', 'LTP', 'AVG', 'INV', 'CUR', 'P&L', 'NET%', 'DAY%', 'VALUE', 'STOCKS', '% OF 60'].indexOf(upper) > -1) {
-      alignClass = 'r';
-      alignStyle = 'text-align:right;';
     }
 
     const isSorted = excelSortCol === i;
@@ -1676,44 +1716,52 @@ function renderCurrentSheetTable() {
 
     const nonBlankCells = row.filter(c => String(c != null ? c : '').trim() !== '');
     if (nonBlankCells.length > 0 && (nonBlankCells[0] === 'Combined Sector Allocation' || nonBlankCells[0].indexOf('Sector Allocation') > -1)) {
-      trHtml += '<tr style="background:#f1f5f9;border-top:2px solid #cbd5e1;font-weight:700;color:var(--navy)"><td colspan="' + headerRow.length + '" style="padding:8px 10px;font-size:12px">📊 ' + escapeHtml(nonBlankCells[0]) + '</td></tr>';
+      trHtml += '<tr style="background:#f1f5f9;border-top:2px solid #cbd5e1;font-weight:700;color:var(--navy)"><td colspan="' + renderedColumns.length + '" style="padding:8px 10px;font-size:12px">📊 ' + escapeHtml(nonBlankCells[0]) + '</td></tr>';
       continue;
     }
 
     const bVal = bucketCol != null ? String(row[bucketCol] || '').trim().toUpperCase() : '';
+    const portVal = portCol != null ? String(row[portCol] || '').trim().toUpperCase() : '';
+    const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
-    const dVal = decCol != null ? String(row[decCol] || '').trim().toUpperCase() : '';
 
-    const isP1 = bVal === 'P1' || (p1Col != null && isCellChecked(row[p1Col]));
-    const isP2 = bVal === 'P2' || (p2Col != null && isCellChecked(row[p2Col]));
-    const isIN = bVal === 'IN' || dVal === 'IN';
-    const isOUT = bVal === 'OUT' || dVal === 'OUT';
+    const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
+    const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
+
+    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h.sym === sym && h.qty > 0) : false;
+    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h.sym === sym && h.qty > 0) : false;
+
+    let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
+    let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
+
+    if (isP1 && isP2) {
+      if (bVal === 'P1' || hasP1Col) isP2 = false;
+      else if (bVal === 'P2' || hasP2Col) isP1 = false;
+      else if (portVal === 'P1') isP2 = false;
+      else if (portVal === 'P2') isP1 = false;
+    }
+
+    const isNonPort = !isP1 && !isP2;
+
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
     const isM = (mCol != null && isCellChecked(row[mCol])) || qVal.indexOf('M') > -1;
-    const isBuy = dVal.indexOf('BUY') > -1;
-    const isHold = dVal.indexOf('HOLD') > -1;
-    const isRally = dVal.indexOf('RALLY') > -1;
-    const isExit = dVal.indexOf('EXIT') > -1;
 
     let dataAttrs = ' data-p1="' + (isP1 ? '1' : '0') + '"' +
                     ' data-p2="' + (isP2 ? '1' : '0') + '"' +
-                    ' data-in="' + (isIN ? '1' : '0') + '"' +
-                    ' data-out="' + (isOUT ? '1' : '0') + '"' +
+                    ' data-nonport="' + (isNonPort ? '1' : '0') + '"' +
                     ' data-e="' + (isE ? '1' : '0') + '"' +
                     ' data-c="' + (isC ? '1' : '0') + '"' +
-                    ' data-m="' + (isM ? '1' : '0') + '"' +
-                    ' data-buy="' + (isBuy ? '1' : '0') + '"' +
-                    ' data-hold="' + (isHold ? '1' : '0') + '"' +
-                    ' data-rally="' + (isRally ? '1' : '0') + '"' +
-                    ' data-exit="' + (isExit ? '1' : '0') + '"';
+                    ' data-m="' + (isM ? '1' : '0') + '"';
 
     const zebraBg = (r % 2 === 1) ? 'background:#f8fafc;' : 'background:#ffffff;';
     trHtml += '<tr class="excel-data-row" style="' + zebraBg + '"' + dataAttrs + '>';
 
-    for (let c = 0; c < headerRow.length; c++) {
+    for (let ci = 0; ci < renderedColumns.length; ci++) {
+      const col = renderedColumns[ci];
+      const c = col.origIndex;
       const val = row[c] != null ? String(row[c]).trim() : '';
-      const colName = String(headerRow[c] || '').trim().toUpperCase();
+      const colName = col.upper;
 
       let alignClass = 'l';
       let alignStyle = '';
@@ -1749,37 +1797,15 @@ function renderCurrentSheetTable() {
         else if (u === 'M') cellDisplay = '<span class="badge" style="background:#fffbeb;color:#92400e;font-weight:700;border:1px solid #fde68a">M</span>';
         else if (u === 'CONVICTION') cellDisplay = '<span class="badge" style="background:#f3e8ff;color:#6b21a8;font-weight:700;border:1px solid #d8b4fe">★ Conviction</span>';
         else if (u === '—' || u === '-' || !u) cellDisplay = '<span style="color:#cbd5e1">—</span>';
-      } else if (colName === 'AI CALL' || colName === 'CALL') {
-        alignClass = '';
-        alignStyle = 'text-align:center;';
-        const u = val.toUpperCase();
-        if (u === 'BUY') cellDisplay = '<span class="badge b-buy" style="font-weight:700">BUY</span>';
-        else if (u === 'HOLD') cellDisplay = '<span class="badge b-hold" style="font-weight:700">HOLD</span>';
-        else if (u.indexOf('RALLY') > -1) cellDisplay = '<span class="badge b-rally" style="font-weight:700">SELL ON RALLY</span>';
-        else if (u.indexOf('EXIT') > -1) cellDisplay = '<span class="badge b-exit" style="font-weight:700">EXIT NOW</span>';
       } else if (colName === 'STOCK' || colName === 'SYMBOL' || colName === 'ETF' || colName === 'INSTRUMENT') {
         alignClass = 'l';
         cellDisplay = '<b class="sym" style="font-size:12.5px;color:var(--navy);letter-spacing:0.3px">' + escapeHtml(val) + '</b>';
       } else if (colName === 'SECTOR') {
         alignClass = 'l';
         cellDisplay = val ? ('<span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#f1f5f9;color:#334155;font-size:11px;font-weight:500">' + escapeHtml(val) + '</span>') : '<span style="color:#cbd5e1">—</span>';
-      } else if (['QTY', 'PE (X)', 'MCAP (₹ CR)', 'PE', 'LTP', 'AVG', 'INV', 'CUR', 'P&L', 'NET%', 'DAY%', 'VALUE', 'STOCKS'].indexOf(colName) > -1) {
-        alignClass = 'r';
-        alignStyle = 'text-align:right;font-family:inherit;font-variant-numeric:tabular-nums;';
-        const num = parseFloat(val.replace(/[₹,%]/g, ''));
-        if (!isNaN(num)) {
-          if (colName === 'MCAP (₹ CR)' || colName === 'INV' || colName === 'CUR') {
-            cellDisplay = Math.round(num).toLocaleString('en-IN');
-          } else if (colName === 'PE (X)' || colName === 'PE') {
-            cellDisplay = num.toFixed(1);
-          } else if (colName === 'NET%' || colName === 'DAY%') {
-            const clr = num >= 0 ? '#16a34a' : '#dc2626';
-            cellDisplay = '<span style="color:' + clr + ';font-weight:600">' + (num >= 0 ? '+' : '') + num.toFixed(1) + '%</span>';
-          }
-        }
-      } else if (['MASTER REASON', 'SELECTION BASIS', 'REASON', 'DESCRIPTION', 'IMPLEMENTATION', 'AGREED RULE', 'TREATMENT', 'SOURCE / NOTE'].indexOf(colName) > -1) {
+      } else if (['REASON', 'DESCRIPTION', 'IMPLEMENTATION', 'AGREED RULE', 'TREATMENT', 'SOURCE / NOTE', 'VALUE', 'STOCKS', '% OF 60', 'METRIC'].indexOf(colName) > -1) {
         alignClass = 'l';
-        alignStyle = 'max-width:320px;min-width:180px;white-space:normal;line-height:1.4;color:#334155;font-size:11.5px;';
+        alignStyle = 'max-width:340px;min-width:160px;white-space:normal;line-height:1.4;color:#334155;font-size:11.5px;';
       }
 
       trHtml += '<td class="' + alignClass + '" style="padding:6px 9px;border-bottom:1px solid #edf0f5;' + alignStyle + '">' + cellDisplay + '</td>';
@@ -1798,8 +1824,7 @@ function renderExcelFilterChips(availableFilters, counts) {
   const defs = [['ALL', 'All (' + (counts.ALL || 0) + ')']];
   availableFilters.forEach(k => {
     let label = k;
-    if (k === 'RALLY') label = 'Sell on Rally';
-    else if (k === 'EXIT') label = 'Exit';
+    if (k === 'NONPORT') label = 'Non-Portfolio';
     defs.push([k, label + ' (' + (counts[k] || 0) + ')']);
   });
 
