@@ -1335,7 +1335,7 @@ function clearExcelSearch() {
 function isCellChecked(val) {
   if (val == null) return false;
   const s = String(val).trim().toLowerCase();
-  return s !== '' && s !== '-' && s !== '—' && s !== '0' && s !== 'false' && s !== 'null';
+  return s !== '' && s !== '-' && s !== '—' && s !== '0' && s !== 'false' && s !== 'null' && s !== 'no';
 }
 
 function escapeHtml(s){
@@ -1452,10 +1452,14 @@ function renderMasterExcel(targetSheet) {
 
   // Sheet pills
   if (targetSheet && me.sheetNames.indexOf(targetSheet) > -1) {
-    if (targetSheet !== currentExcelSheetName) activeExcelFilters = {};
+    if (targetSheet !== currentExcelSheetName) {
+      activeExcelFilters = {};
+      excelSortCol = null;
+    }
     currentExcelSheetName = targetSheet;
   } else if (!currentExcelSheetName || me.sheetNames.indexOf(currentExcelSheetName) === -1) {
     activeExcelFilters = {};
+    excelSortCol = null;
     currentExcelSheetName = me.sheetNames[0];
   }
 
@@ -1488,15 +1492,18 @@ function renderCurrentSheetTable() {
   const tbody = document.getElementById('excelTbody');
   const captionEl = document.getElementById('excelCaptionBanner');
   const filterBarEl = document.getElementById('excelFilterBar');
+  if (!thead || !tbody) return;
   thead.innerHTML = '';
   tbody.innerHTML = '';
 
-  if (!rawRows.length) {
+  if (!rawRows || !rawRows.length) {
     if (captionEl) captionEl.classList.add('hidden');
     if (filterBarEl) filterBarEl.classList.add('hidden');
     tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:30px;color:var(--mut)">Sheet is empty.</td></tr>';
     return;
   }
+
+  try {
 
   // Robust scan for title / subtitle banner and the actual header row
   let titleText = '';
@@ -1625,8 +1632,8 @@ function renderCurrentSheetTable() {
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
 
-    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h.sym === sym && h.qty > 0) : false;
-    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h.sym === sym && h.qty > 0) : false;
+    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
+    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
 
     let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
     let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
@@ -1728,8 +1735,8 @@ function renderCurrentSheetTable() {
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
 
-    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h.sym === sym && h.qty > 0) : false;
-    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h.sym === sym && h.qty > 0) : false;
+    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
+    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
 
     let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
     let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
@@ -1812,8 +1819,12 @@ function renderCurrentSheetTable() {
     }
     trHtml += '</tr>';
   }
-  tbody.innerHTML = trHtml;
-  filterMasterExcelTable();
+    tbody.innerHTML = trHtml;
+    filterMasterExcelTable();
+  } catch (err) {
+    console.error('renderCurrentSheetTable error:', err);
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:#dc2626;background:#fef2f2">⚠ Error rendering sheet: ' + escapeHtml(err.message) + '</td></tr>';
+  }
 }
 
 function renderExcelFilterChips(availableFilters, counts) {
@@ -1830,7 +1841,7 @@ function renderExcelFilterChips(availableFilters, counts) {
 
   const chipsHtml = defs.map(d => {
     const on = (d[0] === 'ALL') ? !anySel : !!activeExcelFilters[d[0]];
-    return '<button class="chip ' + (on ? 'active' : '') + '" onclick="toggleExcelFilter(\'' + d[0] + '\')">' +
+    return '<button class="chip ' + (on ? 'active' : '') + '" data-filter="' + d[0] + '" onclick="toggleExcelFilter(\'' + d[0] + '\')">' +
            escapeHtml(d[1]) + '</button>';
   }).join('');
 
@@ -1840,19 +1851,32 @@ function renderExcelFilterChips(availableFilters, counts) {
 function toggleExcelFilter(f) {
   if (f === 'ALL') {
     activeExcelFilters = {};
-  } else if (activeExcelFilters[f]) {
-    delete activeExcelFilters[f];
+  } else if (f === 'P1' || f === 'P2' || f === 'NONPORT') {
+    // Mutually exclusive portfolio bucket toggle:
+    if (activeExcelFilters[f]) {
+      delete activeExcelFilters[f];
+    } else {
+      delete activeExcelFilters['P1'];
+      delete activeExcelFilters['P2'];
+      delete activeExcelFilters['NONPORT'];
+      activeExcelFilters[f] = true;
+    }
   } else {
-    activeExcelFilters[f] = true;
+    // Category qualifications (E, C, M) can be toggled independently
+    if (activeExcelFilters[f]) {
+      delete activeExcelFilters[f];
+    } else {
+      activeExcelFilters[f] = true;
+    }
   }
 
-  // Update chip active classes
+  // Update chip active classes using data-filter attribute
   const filterBarEl = document.getElementById('excelFilterBar');
   if (filterBarEl) {
     const anySel = Object.keys(activeExcelFilters).length > 0;
     filterBarEl.querySelectorAll('.chip').forEach(btn => {
-      const txt = btn.textContent.split(' ')[0];
-      const on = (txt === 'All') ? !anySel : !!activeExcelFilters[txt];
+      const filterKey = btn.dataset.filter || btn.getAttribute('data-filter') || '';
+      const on = (filterKey === 'ALL') ? !anySel : !!activeExcelFilters[filterKey];
       btn.classList.toggle('active', on);
     });
   }
@@ -1892,8 +1916,16 @@ function filterMasterExcelTable() {
 
   const noteEl = document.getElementById('excelFilterNote');
   if (noteEl) {
-    if (selKeys.length > 0 || query) {
-      noteEl.textContent = 'Showing ' + visibleCount + ' of ' + rows.length;
+    if (rows.length > 0) {
+      if (selKeys.length > 0 || query) {
+        if (visibleCount === 0) {
+          noteEl.textContent = 'Showing 0 of ' + rows.length + ' (No matching stocks)';
+        } else {
+          noteEl.textContent = 'Showing ' + visibleCount + ' of ' + rows.length;
+        }
+      } else {
+        noteEl.textContent = '';
+      }
     } else {
       noteEl.textContent = '';
     }
