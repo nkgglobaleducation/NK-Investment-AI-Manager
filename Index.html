@@ -1275,13 +1275,14 @@ function sortMasterExcelBy(colIdx) {
 }
 
 const EXCEL_FILTER_GROUPS = {
+  IN: 'status',
+  OUT: 'status',
   P1: 'port',
   P2: 'port',
   NONPORT: 'port',
-  IN: 'status',
-  OUT: 'status',
-  E: 'cat',
-  C: 'cat'
+  E: 'e',
+  C: 'c',
+  Q: 'q'
 };
 
 function clearExcelSearch() {
@@ -1591,6 +1592,28 @@ function renderCurrentSheetTable() {
               : (colMap['PORT 2'] != null ? colMap['PORT 2']
               : colMap['PORTFOLIO 2']))));
 
+  const qltCol = colMap['Q'] != null ? colMap['Q']
+               : (colMap['QUALITY'] != null ? colMap['QUALITY']
+               : (colMap['QLT'] != null ? colMap['QLT']
+               : (colMap['QUALITY SCREENER'] != null ? colMap['QUALITY SCREENER'] : null)));
+
+  const qltList = (DATA && DATA.screeners && Array.isArray(DATA.screeners.quality))
+    ? DATA.screeners.quality.map(s => String(s || '').trim().toUpperCase())
+    : [];
+
+  const hasStocks = stockCol != null || bucketCol != null || p1Col != null || p2Col != null;
+  const hasQCol = renderedColumns.some(c => ['Q', 'QUALITY', 'QLT'].indexOf(c.upper) > -1);
+  if (hasStocks && !hasQCol) {
+    const cIdx = renderedColumns.findIndex(c => c.upper === 'C');
+    const insertAt = cIdx > -1 ? cIdx + 1 : (renderedColumns.length > 3 ? 3 : renderedColumns.length);
+    renderedColumns.splice(insertAt, 0, {
+      origIndex: -999,
+      name: 'Q',
+      upper: 'Q',
+      isVirtual: true
+    });
+  }
+
   // Compute filter counts
   const filterCounts = {
     ALL: dataRows.length,
@@ -1600,7 +1623,8 @@ function renderCurrentSheetTable() {
     P2: 0,
     NONPORT: 0,
     E: 0,
-    C: 0
+    C: 0,
+    Q: 0
   };
 
   dataRows.forEach(row => {
@@ -1633,6 +1657,7 @@ function renderCurrentSheetTable() {
 
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
+    const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
 
     if (isIN) filterCounts.IN++;
     if (isOUT) filterCounts.OUT++;
@@ -1641,19 +1666,19 @@ function renderCurrentSheetTable() {
     if (isNonPort) filterCounts.NONPORT++;
     if (isE) filterCounts.E++;
     if (isC) filterCounts.C++;
+    if (isQ) filterCounts.Q++;
   });
 
   const availableFilters = [];
-  if (filterCounts.IN > 0 && filterCounts.OUT > 0) {
+  if (filterCounts.IN > 0 || filterCounts.OUT > 0 || bucketCol != null || decCol != null) {
     availableFilters.push('IN', 'OUT');
   }
-  const hasStocks = stockCol != null || bucketCol != null || p1Col != null || p2Col != null;
   if (hasStocks) {
     availableFilters.push('P1', 'P2', 'NONPORT');
   }
-  ['E', 'C'].forEach(k => {
-    if (filterCounts[k] > 0) availableFilters.push(k);
-  });
+  if (hasStocks || filterCounts.E > 0 || eCol != null) availableFilters.push('E');
+  if (hasStocks || filterCounts.C > 0 || cCol != null) availableFilters.push('C');
+  if (hasStocks || filterCounts.Q > 0 || qltCol != null) availableFilters.push('Q');
 
   if (filterBarEl) {
     if (availableFilters.length > 0) {
@@ -1674,15 +1699,16 @@ function renderCurrentSheetTable() {
     let alignClass = 'l';
     let alignStyle = '';
 
-    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'P1', 'P2', 'CURRENT P1', 'CURRENT P2', 'CURR P1', 'CURR P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'DECISION'].indexOf(upper) > -1) {
+    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'Q', 'QUALITY', 'QLT', 'P1', 'P2', 'CURRENT P1', 'CURRENT P2', 'CURR P1', 'CURR P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'DECISION'].indexOf(upper) > -1) {
       alignClass = '';
       alignStyle = 'text-align:center;';
     }
 
     const isSorted = excelSortCol === i;
     const sortIcon = isSorted ? (excelSortDir > 0 ? ' <span style="color:var(--orange);font-weight:900">↑</span>' : ' <span style="color:var(--orange);font-weight:900">↓</span>') : ' <span class="arr" style="opacity:.5;font-size:8.5px">⇅</span>';
+    const thTitle = (upper === 'Q' || upper === 'QUALITY' || upper === 'QLT') ? ' title="Quality Screener"' : '';
 
-    thHtml += '<th class="' + alignClass + '" onclick="sortMasterExcelBy(' + i + ')" style="padding:9px 10px;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;border-bottom:2px solid var(--orange);font-size:11.5px;font-weight:700;letter-spacing:0.3px;white-space:nowrap;' + alignStyle + '">' + escapeHtml(text) + sortIcon + '</th>';
+    thHtml += '<th class="' + alignClass + '" onclick="sortMasterExcelBy(' + i + ')" style="padding:9px 10px;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;border-bottom:2px solid var(--orange);font-size:11.5px;font-weight:700;letter-spacing:0.3px;white-space:nowrap;' + alignStyle + '"' + thTitle + '>' + escapeHtml(text) + sortIcon + '</th>';
   });
   thHtml += '</tr>';
   thead.innerHTML = thHtml;
@@ -1690,6 +1716,15 @@ function renderCurrentSheetTable() {
   // Sorting
   if (excelSortCol != null) {
     dataRows.sort((a, b) => {
+      if (excelSortCol === -999) {
+        const symA = stockCol != null ? String(a[stockCol] || '').trim().toUpperCase() : '';
+        const symB = stockCol != null ? String(b[stockCol] || '').trim().toUpperCase() : '';
+        const qValA = qualCol != null ? String(a[qualCol] || '').trim().toUpperCase() : '';
+        const qValB = qualCol != null ? String(b[qualCol] || '').trim().toUpperCase() : '';
+        const isQA = (qltCol != null && isCellChecked(a[qltCol])) || qValA.indexOf('Q') > -1 || (symA && qltList.indexOf(symA) > -1);
+        const isQB = (qltCol != null && isCellChecked(b[qltCol])) || qValB.indexOf('Q') > -1 || (symB && qltList.indexOf(symB) > -1);
+        return ((isQA ? 1 : 0) - (isQB ? 1 : 0)) * excelSortDir;
+      }
       let va = a[excelSortCol] != null ? a[excelSortCol] : '';
       let vb = b[excelSortCol] != null ? b[excelSortCol] : '';
 
@@ -1743,6 +1778,7 @@ function renderCurrentSheetTable() {
 
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
+    const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
 
     let dataAttrs = ' data-in="' + (isIN ? '1' : '0') + '"' +
                     ' data-out="' + (isOUT ? '1' : '0') + '"' +
@@ -1750,7 +1786,8 @@ function renderCurrentSheetTable() {
                     ' data-p2="' + (isP2 ? '1' : '0') + '"' +
                     ' data-nonport="' + (isNonPort ? '1' : '0') + '"' +
                     ' data-e="' + (isE ? '1' : '0') + '"' +
-                    ' data-c="' + (isC ? '1' : '0') + '"';
+                    ' data-c="' + (isC ? '1' : '0') + '"' +
+                    ' data-q="' + (isQ ? '1' : '0') + '"';
 
     const zebraBg = (r % 2 === 1) ? 'background:#f8fafc;' : 'background:#ffffff;';
     trHtml += '<tr class="excel-data-row" style="' + zebraBg + '"' + dataAttrs + '>';
@@ -1758,8 +1795,13 @@ function renderCurrentSheetTable() {
     for (let ci = 0; ci < renderedColumns.length; ci++) {
       const col = renderedColumns[ci];
       const c = col.origIndex;
-      const val = row[c] != null ? String(row[c]).trim() : '';
       const colName = col.upper;
+      let val = '';
+      if (col.isVirtual && colName === 'Q') {
+        val = isQ ? '✓' : '';
+      } else if (c >= 0) {
+        val = row[c] != null ? String(row[c]).trim() : '';
+      }
 
       let alignClass = 'l';
       let alignStyle = '';
@@ -1769,10 +1811,11 @@ function renderCurrentSheetTable() {
         alignClass = '';
         alignStyle = 'text-align:center;width:40px;';
         cellDisplay = '<span style="color:var(--mut);font-weight:600;font-size:11px">' + escapeHtml(val) + '</span>';
-      } else if (['E', 'C', 'P1', 'P2'].indexOf(colName) > -1) {
+      } else if (['E', 'C', 'Q', 'QUALITY', 'QLT', 'P1', 'P2'].indexOf(colName) > -1) {
         alignClass = '';
         alignStyle = 'text-align:center;width:44px;';
-        if (isCellChecked(val)) {
+        const checked = (colName === 'Q' || colName === 'QUALITY' || colName === 'QLT') ? isQ : isCellChecked(val);
+        if (checked) {
           cellDisplay = '<span class="badge b-buy" style="font-size:10px;padding:2px 6px">✓</span>';
         } else {
           cellDisplay = '<span style="color:#cbd5e1">—</span>';
@@ -1835,6 +1878,7 @@ function renderExcelFilterChips(availableFilters, counts) {
   availableFilters.forEach(k => {
     let label = k;
     if (k === 'NONPORT') label = 'Non-Portfolio';
+    else if (k === 'Q') label = 'Quality';
     defs.push([k, label + ' (' + (counts[k] || 0) + ')']);
   });
 
@@ -1850,27 +1894,8 @@ function renderExcelFilterChips(availableFilters, counts) {
 function toggleExcelFilter(f) {
   if (f === 'ALL') {
     activeExcelFilters = {};
-  } else if (f === 'IN' || f === 'OUT') {
-    // Mutually exclusive IN / OUT status toggle:
-    if (activeExcelFilters[f]) {
-      delete activeExcelFilters[f];
-    } else {
-      delete activeExcelFilters['IN'];
-      delete activeExcelFilters['OUT'];
-      activeExcelFilters[f] = true;
-    }
-  } else if (f === 'P1' || f === 'P2' || f === 'NONPORT') {
-    // Mutually exclusive portfolio bucket toggle:
-    if (activeExcelFilters[f]) {
-      delete activeExcelFilters[f];
-    } else {
-      delete activeExcelFilters['P1'];
-      delete activeExcelFilters['P2'];
-      delete activeExcelFilters['NONPORT'];
-      activeExcelFilters[f] = true;
-    }
   } else {
-    // Category qualifications (E, C) can be toggled independently
+    // Independent multi-filter toggle: any combination of filters can be active simultaneously
     if (activeExcelFilters[f]) {
       delete activeExcelFilters[f];
     } else {
