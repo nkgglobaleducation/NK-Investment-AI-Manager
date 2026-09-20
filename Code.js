@@ -19,7 +19,6 @@ const TAB_P2                    = 'P2_Holdings';
 const TAB_SCREENER              = 'Screener'; // Legacy / union fallback
 const TAB_SCREENER_COMPOUNDER   = 'Screener_Compounder';
 const TAB_SCREENER_QUALITY      = 'Screener_Quality';
-const TAB_SCREENER_MULTIBAGGER  = 'Screener_Multibagger';
 const TAB_SCREENER_HISTORY      = 'Screener_History';
 const TAB_SCREENER_DROPOUTS     = 'Screener_Dropouts';
 const TAB_PRICES                = 'LivePrices';
@@ -192,18 +191,14 @@ function uploadCSV(type, csvText) {
   if (!rows || rows.length < 2) throw new Error('CSV appears empty.');
   const now = nowIST_();
 
-  if (type === 'SCREENER' || type === 'SCREENER_COMPOUNDER' || type === 'SCREENER_QUALITY' || type === 'SCREENER_MULTIBAGGER') {
+  if (type === 'SCREENER' || type === 'SCREENER_COMPOUNDER' || type === 'SCREENER_QUALITY') {
     const codes = [];
     for (let i = 1; i < rows.length; i++) {
       const c = String(rows[i][0] || '').trim().toUpperCase();
       if (c) codes.push(c);
     }
-    const tabName = (type === 'SCREENER_QUALITY') ? TAB_SCREENER_QUALITY
-                  : (type === 'SCREENER_MULTIBAGGER') ? TAB_SCREENER_MULTIBAGGER
-                  : TAB_SCREENER_COMPOUNDER;
-    const metaKey = (type === 'SCREENER_QUALITY') ? 'SCREENER_QUALITY'
-                  : (type === 'SCREENER_MULTIBAGGER') ? 'SCREENER_MULTIBAGGER'
-                  : 'SCREENER_COMPOUNDER';
+    const tabName = (type === 'SCREENER_QUALITY') ? TAB_SCREENER_QUALITY : TAB_SCREENER_COMPOUNDER;
+    const metaKey = (type === 'SCREENER_QUALITY') ? 'SCREENER_QUALITY' : 'SCREENER_COMPOUNDER';
 
     // Lock only the sheet write — CSV parsing above is in-memory and needs no exclusivity.
     const lock = LockService.getScriptLock();
@@ -382,12 +377,10 @@ function getAllScreenedSymbols_() {
   const tCmp = readTab_(TAB_SCREENER_COMPOUNDER);
   const tLegacy = tCmp.length ? [] : readTab_(TAB_SCREENER);
   const tQlt = readTab_(TAB_SCREENER_QUALITY);
-  const tMb = readTab_(TAB_SCREENER_MULTIBAGGER);
 
   tCmp.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
   tLegacy.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
   tQlt.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
-  tMb.forEach(r => { if (r[0]) set[String(r[0]).trim().toUpperCase()] = 1; });
 
   // Include any ETFs in P1 or P2
   readTab_(TAB_P1).concat(readTab_(TAB_P2)).forEach(r => {
@@ -635,8 +628,6 @@ function updateDropoutsSheet_(updatedHistoryMap, curCycles, nowStr) {
   (tCmp.length ? tCmp : readTab_(TAB_SCREENER)).forEach(r => { if (r[0]) cmpSet[String(r[0]).trim().toUpperCase()] = true; });
   const qltSet = {};
   readTab_(TAB_SCREENER_QUALITY).forEach(r => { if (r[0]) qltSet[String(r[0]).trim().toUpperCase()] = true; });
-  const mbSet = {};
-  readTab_(TAB_SCREENER_MULTIBAGGER).forEach(r => { if (r[0]) mbSet[String(r[0]).trim().toUpperCase()] = true; });
 
   const dropoutRows = [];
   const dropoutList = [];
@@ -658,7 +649,6 @@ function updateDropoutsSheet_(updatedHistoryMap, curCycles, nowStr) {
       const droppedList = [];
       if (!cmpSet[sym]) droppedList.push('Compounder');
       if (!qltSet[sym] && Object.keys(qltSet).length > 0) droppedList.push('Quality');
-      if (!mbSet[sym] && Object.keys(mbSet).length > 0) droppedList.push('Multibagger');
       const droppedStr = droppedList.length ? droppedList.join(', ') : 'Compounder';
 
       const prevRecord = existingMap[sym] || {};
@@ -839,13 +829,11 @@ function getInitialData() {
   // If Screener_Compounder is empty, fallback to legacy Screener tab
   const scrCmp = (scrCmpRaw.length ? scrCmpRaw : readTab_(TAB_SCREENER)).map(r => String(r[0])).filter(Boolean);
   const scrQlt = readTab_(TAB_SCREENER_QUALITY).map(r => String(r[0])).filter(Boolean);
-  const scrMb  = readTab_(TAB_SCREENER_MULTIBAGGER).map(r => String(r[0])).filter(Boolean);
 
   // Union screener array for backward compatibility & price/AI pipelines
   const allMap = {};
   scrCmp.forEach(s => allMap[s] = 1);
   scrQlt.forEach(s => allMap[s] = 1);
-  scrMb.forEach(s => allMap[s] = 1);
 
   const screenerHistory = readScreenerHistory_();
 
@@ -891,8 +879,7 @@ function getInitialData() {
     screener: screener,
     screeners: {
       compounder: scrCmp,
-      quality: scrQlt,
-      multibagger: scrMb
+      quality: scrQlt
     },
     screenerHistory: screenerHistory,
     dropouts: dropouts,
@@ -904,7 +891,6 @@ function getInitialData() {
       screenerSavedTs: Number(getMeta_('SCREENER_SAVED_TS') || 0),
       screenerCmpSaved: getMeta_('SCREENER_COMPOUNDER_SAVED') || getMeta_('SCREENER_SAVED'),
       screenerQltSaved: getMeta_('SCREENER_QUALITY_SAVED'),
-      screenerMbSaved: getMeta_('SCREENER_MULTIBAGGER_SAVED'),
       pricesSaved: getMeta_('PRICES_SAVED'), aiSaved: getMeta_('AI_SAVED'),
       masterExcelSaved: getMeta_('MASTER_EXCEL_SAVED'),
       masterExcelFilename: getMeta_('MASTER_EXCEL_FILENAME')
@@ -1412,7 +1398,6 @@ function analyzeSymbols_(batch, data, useSearch) {
     if (data.screeners) {
       if ((data.screeners.compounder || []).indexOf(sym) !== -1) scrTags.push('Compounder');
       if ((data.screeners.quality || []).indexOf(sym) !== -1) scrTags.push('Quality');
-      if ((data.screeners.multibagger || []).indexOf(sym) !== -1) scrTags.push('Multibagger');
     }
     const scrTagsStr = scrTags.length ? (' [Screeners passed: ' + scrTags.join(', ') + ']') : '';
 

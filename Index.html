@@ -162,9 +162,6 @@
       <input type="file" id="fileScrQlt" accept=".csv">
       <div class="side-note" id="noteScrQlt">No data yet</div>
 
-      <label style="margin-top:8px">3. Multibagger Screener</label>
-      <input type="file" id="fileScrMb" accept=".csv">
-      <div class="side-note" id="noteScrMb">No data yet</div>
 
       <div class="side-note hidden" id="staleScrWarn" style="color:#ff8e8e;font-weight:700;margin-top:6px"></div>
       <button class="btn btn-load" id="btnScr" onclick="loadAllScreeners()" style="margin-top:8px">📂 Load Screeners</button>
@@ -289,11 +286,6 @@
           <div class="val" id="stDropQlt" style="color:var(--blue)">0</div>
           <div class="sub">Missed Quality screener</div>
         </div>
-        <div class="stat">
-          <div class="lbl">DROPPED FROM MULTIBAGGER</div>
-          <div class="val" id="stDropMb" style="color:#a855f7">0</div>
-          <div class="sub">Missed Multibagger screener</div>
-        </div>
       </div>
 
       <div class="chipbar" style="margin-top:10px">
@@ -301,7 +293,6 @@
         <button class="chip active" id="dropFilterAll" onclick="setDropFilter('ALL')">All Dropouts</button>
         <button class="chip" id="dropFilterCmp" onclick="setDropFilter('CMP')">Compounder</button>
         <button class="chip" id="dropFilterQlt" onclick="setDropFilter('QLT')">Quality</button>
-        <button class="chip" id="dropFilterMb" onclick="setDropFilter('MB')">Multibagger</button>
         <button class="btn btn-ai" id="btnDiagnose" onclick="triggerAIDiagnosis()" style="margin-left:auto;font-size:11.5px;padding:6px 12px">⚡ Refresh AI Diagnoses</button>
         <button class="chip chip-export" onclick="exportDropoutsCSV()" style="margin-left:6px">📥 Export Dropouts</button>
       </div>
@@ -331,7 +322,7 @@
               <th onclick="sortDropBy('p2')">P2 <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('etf')">E <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('cmp')">C <span class="arr">⇅</span></th>
-              <th onclick="sortDropBy('mb')">M <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('qlt')">Q <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('passedPeriod')">Passed Period <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('failedPeriod')">Failed Period <span class="arr">⇅</span></th>
               <th class="l" onclick="sortDropBy('decision')">Decision <span class="arr">⇅</span></th>
@@ -444,7 +435,7 @@ const FILTER_GROUPS = {
   // Own group, so these AND with the others (Screener + Buy = buy-rated screener stocks).
   // SCRN and NOTSCRN sit in the SAME group, so selecting both OR's back to everything — the same
   // way P1 + P2 + Not held does.
-  SCRN:'scrn', SCRN_CMP:'scrn', SCRN_QLT:'scrn', SCRN_MB:'scrn', CORE:'scrn', DROPOUT:'scrn', NOTSCRN:'scrn',
+  SCRN:'scrn', SCRN_CMP:'scrn', SCRN_QLT:'scrn', CORE:'scrn', DROPOUT:'scrn', NOTSCRN:'scrn',
   ETF:'asset',
   WATCH:'watch'
 };
@@ -515,11 +506,8 @@ function updateNotes(){
   const scrs = DATA.screeners || {};
   const cmpLen = (scrs.compounder && scrs.compounder.length) || (DATA.screener ? DATA.screener.length : 0);
   const qltLen = (scrs.quality && scrs.quality.length) || 0;
-  const mbLen  = (scrs.multibagger && scrs.multibagger.length) || 0;
-
   note('noteScrCmp', cmpLen, m.screenerCmpSaved || m.screenerSaved);
   note('noteScrQlt', qltLen, m.screenerQltSaved);
-  note('noteScrMb',  mbLen,  m.screenerMbSaved);
 
   const me = DATA.masterExcel;
   const noteMe = document.getElementById('noteMasterExcel');
@@ -624,13 +612,12 @@ function makeRow(h, port){
   const scrs = DATA.screeners || {};
   const inCmp = (scrs.compounder && scrs.compounder.indexOf(h.sym) > -1) || false;
   const inQlt = (scrs.quality && scrs.quality.indexOf(h.sym) > -1) || false;
-  const inMb  = (scrs.multibagger && scrs.multibagger.indexOf(h.sym) > -1) || false;
-  const inScreener = etf || inCmp || inQlt || inMb || (DATA.screener && DATA.screener.indexOf(h.sym) > -1);
+  const inScreener = etf || inCmp || inQlt || (DATA.screener && DATA.screener.indexOf(h.sym) > -1);
   const scInfo = (DATA.screenerHistory && DATA.screenerHistory[h.sym]) || null;
   let scrObj = null;
   if (etf) {
     // Uploaded ETFs are permanently screened
-    scrObj = { active: true, status: 'ETF', score: '12/12', cmp: inCmp, qlt: inQlt, mb: inMb };
+    scrObj = { active: true, status: 'ETF', score: '12/12', cmp: inCmp, qlt: inQlt };
   } else if (inScreener || (scInfo && scInfo.status === 'DROPOUT')) {
     const rawScore = scInfo ? String(scInfo.score || '') : '';
     const cleanScore = (rawScore && !rawScore.includes('GMT') && /^\d+\/12$/.test(rawScore))
@@ -638,9 +625,9 @@ function makeRow(h, port){
       : ((scInfo && scInfo.scoreNum != null ? scInfo.scoreNum : 1) + '/12');
     if (inScreener) {
       const st = scInfo ? scInfo.status : 'NEW';
-      scrObj = { active: true, status: st, score: cleanScore, cmp: inCmp, qlt: inQlt, mb: inMb };
+      scrObj = { active: true, status: st, score: cleanScore, cmp: inCmp, qlt: inQlt };
     } else {
-      scrObj = { active: false, status: 'DROPOUT', score: cleanScore, cmp: inCmp, qlt: inQlt, mb: inMb };
+      scrObj = { active: false, status: 'DROPOUT', score: cleanScore, cmp: inCmp, qlt: inQlt };
     }
   }
   
@@ -716,21 +703,11 @@ function renderScrBadge(scr){
   const names = [];
   if (scr.cmp) names.push('Compounder');
   if (scr.qlt) names.push('Quality');
-  if (scr.mb)  names.push('Multibagger');
 
   let label = '';
   let bClass = 'b-buy';
-  if (scr.cmp && scr.qlt && scr.mb) {
-    label = '✓ ALL';
-    bClass = 'b-buy';
-  } else if (scr.cmp && scr.qlt) {
+  if (scr.cmp && scr.qlt) {
     label = '✓ C+Q';
-    bClass = 'b-buy';
-  } else if (scr.cmp && scr.mb) {
-    label = '✓ C+M';
-    bClass = 'b-buy';
-  } else if (scr.qlt && scr.mb) {
-    label = '✓ Q+M';
     bClass = 'b-buy';
   } else if (scr.cmp) {
     label = '✓ CMP';
@@ -738,9 +715,6 @@ function renderScrBadge(scr){
   } else if (scr.qlt) {
     label = '✓ QLT';
     bClass = 'b-hold';
-  } else if (scr.mb) {
-    label = '✓ MB';
-    bClass = 'b-rally';
   } else {
     // Fallback if individual flags are empty or legacy
     if (scr.status === 'CORE') {
@@ -771,9 +745,8 @@ function matchChip(key, r){
     case 'P2':       return r.port==='P2';
     case 'NOTHELD':  return !r.port;
     case 'SCRN':     return !!(r.scr && r.scr.active);
-    case 'SCRN_CMP': return !!(r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && !r.scr.mb && r.scr.status !== 'ETF')));
+    case 'SCRN_CMP': return !!(r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && r.scr.status !== 'ETF')));
     case 'SCRN_QLT': return !!(r.scr && r.scr.qlt);
-    case 'SCRN_MB':  return !!(r.scr && r.scr.mb);
     case 'CORE':     return !!(r.scr && (r.scr.status === 'CORE' || r.scr.status === 'ETF'));
     case 'DROPOUT':  return !!(r.scr && r.scr.status === 'DROPOUT');
     case 'NOTSCRN':  return !(r.scr && r.scr.active);
@@ -805,9 +778,8 @@ function renderFilters(){
     P2: ROWS.filter(r=>r.port==='P2').length,
     NOTHELD: ROWS.filter(r=>!r.port).length,
     SCRN: ROWS.filter(r=>r.scr && r.scr.active).length,
-    SCRN_CMP: ROWS.filter(r=>r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && !r.scr.mb && r.scr.status !== 'ETF'))).length,
+    SCRN_CMP: ROWS.filter(r=>r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && r.scr.status !== 'ETF'))).length,
     SCRN_QLT: ROWS.filter(r=>r.scr && r.scr.qlt).length,
-    SCRN_MB: ROWS.filter(r=>r.scr && r.scr.mb).length,
     CORE: ROWS.filter(r=>r.scr && (r.scr.status === 'CORE' || r.scr.status === 'ETF')).length,
     DROPOUT: ROWS.filter(r=>r.scr && r.scr.status === 'DROPOUT').length,
     NOTSCRN: ROWS.filter(r=>!r.scr || !r.scr.active).length,
@@ -818,7 +790,7 @@ function renderFilters(){
     ['ALL','All'],['EXIT','Exit now'],['RALLY','Sell on rally'],['BUY','Buy'],
     ['HOLD','Hold'],['PENDING','Pending'],['P1','P1'],['P2','P2'],
     ['NOTHELD','Not held'],
-    ['SCRN','All Screeners'],['SCRN_CMP','Compounder'],['SCRN_QLT','Quality'],['SCRN_MB','Multibagger'],
+    ['SCRN','All Screeners'],['SCRN_CMP','Compounder'],['SCRN_QLT','Quality'],
     ['CORE','Core 12M'],['DROPOUT','Dropouts'],['NOTSCRN','Non-screener'],
     ['ETF','ETFs'],['WATCH','Watchlist']
   ];
@@ -866,7 +838,6 @@ function renderTable(){
           let s = '';
           if (r.scr.cmp) s += 'CMP ';
           if (r.scr.qlt) s += 'QLT ';
-          if (r.scr.mb)  s += 'MB ';
           return s || r.scr.score || '';
         };
         x = getVal(a); y = getVal(b);
@@ -972,7 +943,6 @@ function loadFiles(){
 function loadAllScreeners(){
   const fCmp = document.getElementById('fileScrCmp');
   const fQlt = document.getElementById('fileScrQlt');
-  const fMb  = document.getElementById('fileScrMb');
   const b = document.getElementById('btnScr');
   b.disabled = true;
 
@@ -998,18 +968,10 @@ function loadAllScreeners(){
           .withFailureHandler(e => { setStatus('⚠ Quality: ' + e.message); doneOne(); })
           .uploadCSV('SCREENER_QUALITY', t2);
       }
-      readFile(fMb, t3 => {
-        if (t3) {
-          pending++;
-          google.script.run.withSuccessHandler(doneOne)
-            .withFailureHandler(e => { setStatus('⚠ Multibagger: ' + e.message); doneOne(); })
-            .uploadCSV('SCREENER_MULTIBAGGER', t3);
-        }
-        if (!pending) {
-          b.disabled = false;
-          setStatus('Select at least one Screener CSV file to load.');
-        }
-      });
+      if (!pending) {
+        b.disabled = false;
+        setStatus('Select at least one Screener CSV file to load.');
+      }
     });
   });
 }
@@ -1135,7 +1097,7 @@ let dropSortKey = 'idx', dropSortDir = 1;
 
 function setDropFilter(f) {
   activeDropFilter = f;
-  ['ALL','CMP','QLT','MB'].forEach(k => {
+  ['ALL','CMP','QLT'].forEach(k => {
     const el = document.getElementById('dropFilter' + (k === 'ALL' ? 'All' : (k[0] + k.slice(1).toLowerCase())));
     if (el) el.classList.toggle('active', k === f);
   });
@@ -1164,19 +1126,16 @@ function renderDropouts() {
   const total = list.length;
   const cmpCount = list.filter(d => (d.screenersDropped || '').includes('Compounder')).length;
   const qltCount = list.filter(d => (d.screenersDropped || '').includes('Quality')).length;
-  const mbCount  = list.filter(d => (d.screenersDropped || '').includes('Multibagger')).length;
 
   set('stDropTotal', total);
   set('stDropCmp', cmpCount);
   set('stDropQlt', qltCount);
-  set('stDropMb', mbCount);
   const tabBadge = document.getElementById('tabDropoutCount');
   if (tabBadge) tabBadge.textContent = total;
 
   let filtered = list;
   if (activeDropFilter === 'CMP') filtered = filtered.filter(d => (d.screenersDropped || '').includes('Compounder'));
   else if (activeDropFilter === 'QLT') filtered = filtered.filter(d => (d.screenersDropped || '').includes('Quality'));
-  else if (activeDropFilter === 'MB') filtered = filtered.filter(d => (d.screenersDropped || '').includes('Multibagger'));
 
   if (q) {
     filtered = filtered.filter(d => d.sym.includes(q) || (d.company || '').toUpperCase().includes(q));
@@ -1203,9 +1162,9 @@ function renderDropouts() {
       } else if (dropSortKey === 'cmp') {
         x = (a.screenersDropped || '').includes('Compounder') ? 1 : 0;
         y = (b.screenersDropped || '').includes('Compounder') ? 1 : 0;
-      } else if (dropSortKey === 'mb') {
-        x = (a.screenersDropped || '').includes('Multibagger') ? 1 : 0;
-        y = (b.screenersDropped || '').includes('Multibagger') ? 1 : 0;
+      } else if (dropSortKey === 'qlt') {
+        x = (a.screenersDropped || '').includes('Quality') ? 1 : 0;
+        y = (b.screenersDropped || '').includes('Quality') ? 1 : 0;
       }
       if (typeof x === 'string') return dropSortDir * String(x).localeCompare(String(y));
       return dropSortDir * ((x === y) ? 0 : (x > y ? 1 : -1));
@@ -1225,13 +1184,13 @@ function renderDropouts() {
     const isP2 = !!p2Map[d.sym];
     const isE  = isEtf(d.sym);
     const inCmp = (d.screenersDropped || '').includes('Compounder');
-    const inMb  = (d.screenersDropped || '').includes('Multibagger');
+    const inQlt = (d.screenersDropped || '').includes('Quality');
 
     const p1Badge = isP1 ? '<span class="badge b-p1">P1</span>' : '<span class="b-none">—</span>';
     const p2Badge = isP2 ? '<span class="badge b-p2">P2</span>' : '<span class="b-none">—</span>';
     const etfBadge = isE ? '<span class="badge b-buy">ETF</span>' : '<span class="b-none">—</span>';
     const cmpBadge = inCmp ? '<span class="badge b-exit">DROP</span>' : '<span class="tick">✓</span>';
-    const mbBadge  = inMb  ? '<span class="badge b-exit">DROP</span>' : '<span class="tick">✓</span>';
+    const qltBadge = inQlt ? '<span class="badge b-exit">DROP</span>' : '<span class="tick">✓</span>';
 
     return '<tr>'
       + '<td>' + (d.idx || (i + 1)) + '</td>'
@@ -1240,7 +1199,7 @@ function renderDropouts() {
       + '<td>' + p2Badge + '</td>'
       + '<td>' + etfBadge + '</td>'
       + '<td>' + cmpBadge + '</td>'
-      + '<td>' + mbBadge + '</td>'
+      + '<td>' + qltBadge + '</td>'
       + '<td style="font-size:11px;color:#2e7d32;font-weight:600">' + (d.passedPeriod || '—') + '</td>'
       + '<td style="font-size:11px;color:var(--red);font-weight:600">' + (d.failedPeriod || '—') + '</td>'
       + '<td class="l">' + badge(d.decision || 'HOLD') + '</td>'
@@ -1271,7 +1230,7 @@ function triggerAIDiagnosis() {
 function exportDropoutsCSV() {
   const list = DATA.dropouts || [];
   if (!list.length) { setStatus('No dropouts to export.'); return; }
-  let csv = '#,Stock,Company,P1,P2,ETF,Compounder,Multibagger,Passed_Period,Failed_Period,Decision,Reason\n';
+  let csv = '#,Stock,Company,P1,P2,ETF,Compounder,Quality,Passed_Period,Failed_Period,Decision,Reason\n';
   const p1Map = {}, p2Map = {};
   (DATA.p1 || []).forEach(h => p1Map[h.sym] = 1);
   (DATA.p2 || []).forEach(h => p2Map[h.sym] = 1);
@@ -1285,7 +1244,7 @@ function exportDropoutsCSV() {
       p2Map[d.sym] ? 'YES' : 'NO',
       isEtf(d.sym) ? 'YES' : 'NO',
       (d.screenersDropped || '').includes('Compounder') ? 'DROP' : 'PASS',
-      (d.screenersDropped || '').includes('Multibagger') ? 'DROP' : 'PASS',
+      (d.screenersDropped || '').includes('Quality') ? 'DROP' : 'PASS',
       '"' + (d.passedPeriod || '').replace(/"/g, '""') + '"',
       '"' + (d.failedPeriod || '').replace(/"/g, '""') + '"',
       d.decision || 'HOLD',
@@ -1322,8 +1281,7 @@ const EXCEL_FILTER_GROUPS = {
   IN: 'status',
   OUT: 'status',
   E: 'cat',
-  C: 'cat',
-  M: 'cat'
+  C: 'cat'
 };
 
 function clearExcelSearch() {
@@ -1608,7 +1566,6 @@ function renderCurrentSheetTable() {
   const qualCol = colMap['QUALIFICATION'] != null ? colMap['QUALIFICATION'] : colMap['QUAL'];
   const eCol = colMap['E'] != null ? colMap['E'] : colMap['ETF'];
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
-  const mCol = colMap['M'] != null ? colMap['M'] : colMap['MB'];
   const p1Col = colMap['P1'];
   const p2Col = colMap['P2'];
 
@@ -1619,8 +1576,7 @@ function renderCurrentSheetTable() {
     P2: 0,
     NONPORT: 0,
     E: 0,
-    C: 0,
-    M: 0
+    C: 0
   };
 
   dataRows.forEach(row => {
@@ -1649,14 +1605,12 @@ function renderCurrentSheetTable() {
 
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
-    const isM = (mCol != null && isCellChecked(row[mCol])) || qVal.indexOf('M') > -1;
 
     if (isP1) filterCounts.P1++;
     if (isP2) filterCounts.P2++;
     if (isNonPort) filterCounts.NONPORT++;
     if (isE) filterCounts.E++;
     if (isC) filterCounts.C++;
-    if (isM) filterCounts.M++;
   });
 
   const availableFilters = [];
@@ -1664,7 +1618,7 @@ function renderCurrentSheetTable() {
   if (hasStocks) {
     availableFilters.push('P1', 'P2', 'NONPORT');
   }
-  ['E', 'C', 'M'].forEach(k => {
+  ['E', 'C'].forEach(k => {
     if (filterCounts[k] > 0) availableFilters.push(k);
   });
 
@@ -1687,7 +1641,7 @@ function renderCurrentSheetTable() {
     let alignClass = 'l';
     let alignStyle = '';
 
-    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'M', 'P1', 'P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'DECISION'].indexOf(upper) > -1) {
+    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'P1', 'P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'DECISION'].indexOf(upper) > -1) {
       alignClass = '';
       alignStyle = 'text-align:center;';
     }
@@ -1752,14 +1706,12 @@ function renderCurrentSheetTable() {
 
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
-    const isM = (mCol != null && isCellChecked(row[mCol])) || qVal.indexOf('M') > -1;
 
     let dataAttrs = ' data-p1="' + (isP1 ? '1' : '0') + '"' +
                     ' data-p2="' + (isP2 ? '1' : '0') + '"' +
                     ' data-nonport="' + (isNonPort ? '1' : '0') + '"' +
                     ' data-e="' + (isE ? '1' : '0') + '"' +
-                    ' data-c="' + (isC ? '1' : '0') + '"' +
-                    ' data-m="' + (isM ? '1' : '0') + '"';
+                    ' data-c="' + (isC ? '1' : '0') + '"';
 
     const zebraBg = (r % 2 === 1) ? 'background:#f8fafc;' : 'background:#ffffff;';
     trHtml += '<tr class="excel-data-row" style="' + zebraBg + '"' + dataAttrs + '>';
