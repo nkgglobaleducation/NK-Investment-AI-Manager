@@ -518,6 +518,22 @@ function updateScreenerHistory_(uploadedCodes, nowStr) {
   return updatedMap;
 }
 
+function refreshScreenerConsistency() {
+  const now = nowIST_();
+  const allCodes = getAllScreenedSymbols_();
+  const updatedHistory = updateScreenerHistory_(allCodes, now);
+  const dropouts = readDropouts_();
+  return {
+    status: 'ok',
+    count: Object.keys(updatedHistory || {}).length,
+    screenedCount: allCodes.length,
+    dropoutsCount: dropouts.length,
+    screenerHistory: updatedHistory,
+    dropouts: dropouts,
+    saved: now
+  };
+}
+
 function formatCycleName_(cycleKey) {
   if (!cycleKey || !cycleKey.includes('-')) return cycleKey || '';
   const parts = cycleKey.split('-');

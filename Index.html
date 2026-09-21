@@ -165,6 +165,7 @@
 
       <div class="side-note hidden" id="staleScrWarn" style="color:#ff8e8e;font-weight:700;margin-top:6px"></div>
       <button class="btn btn-load" id="btnScr" onclick="loadAllScreeners()" style="margin-top:8px">📂 Load Screeners</button>
+      <button class="btn" id="btnSyncScr" onclick="refreshConsistency()" style="margin-top:6px;background:#0284c7;color:#fff;font-weight:600" title="Recalculate 12-month consistency scores and update dropouts tracking">🔄 Refresh Consistency</button>
     </div>
 
     <div class="side-card">
@@ -245,6 +246,7 @@
         <button class="chip chip-ai" id="btnAI" onclick="runAI()">🤖 Run AI Analysis</button>
         <button class="chip chip-stop hidden" id="btnStop" onclick="stopAI()">⏹ Stop</button>
         <button class="chip" onclick="freshAI()" title="Clear saved AI results and re-analyze all stocks with today's data">↺ Fresh Analysis</button>
+        <button class="chip" id="btnChipConsistency" onclick="refreshConsistency()" style="background:#0284c7;color:#fff;font-weight:600" title="Recalculate 12-Month Screener Consistency & Dropouts">🔄 Refresh Consistency</button>
         <span class="status-msg" id="statusMsg"></span>
         <button class="chip chip-export" onclick="exportCSV()">⬇ Export</button>
       </div>
@@ -294,6 +296,7 @@
         <button class="chip" id="dropFilterCmp" onclick="setDropFilter('CMP')">Compounder</button>
         <button class="chip" id="dropFilterQlt" onclick="setDropFilter('QLT')">Quality</button>
         <button class="btn btn-ai" id="btnDiagnose" onclick="triggerAIDiagnosis()" style="margin-left:auto;font-size:11.5px;padding:6px 12px">⚡ Refresh AI Diagnoses</button>
+        <button class="chip" id="btnDropConsistency" onclick="refreshConsistency()" style="margin-left:6px;background:#0284c7;color:#fff;font-weight:600" title="Recalculate 12-Month Screener Consistency & Dropouts">🔄 Refresh Consistency</button>
         <button class="chip chip-export" onclick="exportDropoutsCSV()" style="margin-left:6px">📥 Export Dropouts</button>
       </div>
 
@@ -309,8 +312,9 @@
             <col style="width:40px">
             <col style="width:44px">
             <col style="width:44px">
-            <col style="width:160px">
+            <col style="width:68px">
             <col style="width:150px">
+            <col style="width:140px">
             <col style="width:90px">
             <col>
           </colgroup>
@@ -323,6 +327,7 @@
               <th onclick="sortDropBy('etf')">E <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('cmp')">C <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('qlt')">Q <span class="arr">⇅</span></th>
+              <th onclick="sortDropBy('score12m')">Consistency <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('passedPeriod')">Passed Period <span class="arr">⇅</span></th>
               <th onclick="sortDropBy('failedPeriod')">Failed Period <span class="arr">⇅</span></th>
               <th class="l" onclick="sortDropBy('decision')">Decision <span class="arr">⇅</span></th>
@@ -730,7 +735,8 @@ function renderScrBadge(scr){
   }
 
   const passedStr = names.length ? ('Passed: ' + names.join(', ')) : 'Screened Stock';
-  const tip = passedStr + ' | 12M Consistency: ' + (scr.score || '—');
+  const tierStr = (scr.status && scr.status !== 'INACTIVE' && scr.status !== 'NEW' && scr.status !== 'DROPOUT') ? (' (' + scr.status + ')') : '';
+  const tip = passedStr + ' | 12M Consistency: ' + (scr.score || '—') + tierStr;
   return '<span class="badge ' + bClass + '" style="font-size:9px" title="' + tip + '">' + label + '</span>';
 }
 
@@ -977,6 +983,50 @@ function loadAllScreeners(){
 }
 function loadScreener(){ loadAllScreeners(); }
 
+function refreshConsistency() {
+  const btns = [
+    document.getElementById('btnSyncScr'),
+    document.getElementById('btnChipConsistency'),
+    document.getElementById('btnDropConsistency')
+  ].filter(Boolean);
+
+  btns.forEach(b => {
+    b.disabled = true;
+    b.dataset.origHtml = b.innerHTML;
+    b.innerHTML = '<span class="spin"></span>Refreshing…';
+  });
+
+  setStatus('Refreshing 12-Month Screener Consistency & Dropouts…');
+
+  google.script.run
+    .withSuccessHandler(res => {
+      btns.forEach(b => {
+        b.disabled = false;
+        b.innerHTML = b.dataset.origHtml || '🔄 Refresh Consistency';
+      });
+      if (res && res.screenerHistory) {
+        DATA.screenerHistory = res.screenerHistory;
+      }
+      if (res && res.dropouts) {
+        DATA.dropouts = res.dropouts;
+      }
+      rebuild();
+      renderFilters();
+      renderTable();
+      renderDropouts();
+      updateNotes();
+      setStatus('✅ Refreshed 12-Month Screener Consistency: ' + (res.screenedCount || 0) + ' screened stocks, ' + (res.dropoutsCount || 0) + ' dropouts.');
+    })
+    .withFailureHandler(err => {
+      btns.forEach(b => {
+        b.disabled = false;
+        b.innerHTML = b.dataset.origHtml || '🔄 Refresh Consistency';
+      });
+      setStatus('⚠ Failed to refresh consistency: ' + (err && (err.message || err)));
+    })
+    .refreshScreenerConsistency();
+}
+
 function reload(){
   google.script.run.withSuccessHandler(d=>{
     DATA=d; updateNotes(); rebuild(); setStatus('');
@@ -1165,6 +1215,13 @@ function renderDropouts() {
       } else if (dropSortKey === 'qlt') {
         x = (a.screenersDropped || '').includes('Quality') ? 1 : 0;
         y = (b.screenersDropped || '').includes('Quality') ? 1 : 0;
+      } else if (dropSortKey === 'score12m') {
+        const parseScore = s => {
+          const m = String(s || '').match(/^(\d+)\/12/);
+          return m ? parseInt(m[1], 10) : 0;
+        };
+        x = parseScore(a.score12m);
+        y = parseScore(b.score12m);
       }
       if (typeof x === 'string') return dropSortDir * String(x).localeCompare(String(y));
       return dropSortDir * ((x === y) ? 0 : (x > y ? 1 : -1));
@@ -1175,7 +1232,7 @@ function renderDropouts() {
   if (!tbody) return;
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:#7183a1">No dropout stocks found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:30px;color:#7183a1">No dropout stocks found.</td></tr>';
     return;
   }
 
@@ -1200,6 +1257,7 @@ function renderDropouts() {
       + '<td>' + etfBadge + '</td>'
       + '<td>' + cmpBadge + '</td>'
       + '<td>' + qltBadge + '</td>'
+      + '<td style="text-align:center"><span class="badge b-hold" style="font-size:10px;padding:2px 6px;font-weight:700" title="12-Month Screener Consistency">' + escapeHtml(d.score12m || '—') + '</span></td>'
       + '<td style="font-size:11px;color:#2e7d32;font-weight:600">' + (d.passedPeriod || '—') + '</td>'
       + '<td style="font-size:11px;color:var(--red);font-weight:600">' + (d.failedPeriod || '—') + '</td>'
       + '<td class="l">' + badge(d.decision || 'HOLD') + '</td>'
@@ -1230,7 +1288,7 @@ function triggerAIDiagnosis() {
 function exportDropoutsCSV() {
   const list = DATA.dropouts || [];
   if (!list.length) { setStatus('No dropouts to export.'); return; }
-  let csv = '#,Stock,Company,P1,P2,ETF,Compounder,Quality,Passed_Period,Failed_Period,Decision,Reason\n';
+  let csv = '#,Stock,Company,P1,P2,ETF,Compounder,Quality,12M_Consistency,Passed_Period,Failed_Period,Decision,Reason\n';
   const p1Map = {}, p2Map = {};
   (DATA.p1 || []).forEach(h => p1Map[h.sym] = 1);
   (DATA.p2 || []).forEach(h => p2Map[h.sym] = 1);
@@ -1245,6 +1303,7 @@ function exportDropoutsCSV() {
       isEtf(d.sym) ? 'YES' : 'NO',
       (d.screenersDropped || '').includes('Compounder') ? 'DROP' : 'PASS',
       (d.screenersDropped || '').includes('Quality') ? 'DROP' : 'PASS',
+      '"' + (d.score12m || '') + '"',
       '"' + (d.passedPeriod || '').replace(/"/g, '""') + '"',
       '"' + (d.failedPeriod || '').replace(/"/g, '""') + '"',
       d.decision || 'HOLD',
