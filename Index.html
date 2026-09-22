@@ -348,11 +348,13 @@
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <div style="position:relative;display:inline-flex;align-items:center">
-            <input type="text" id="excelSearchInput" placeholder="🔍 Search this sheet..." oninput="filterMasterExcelTable()" style="padding:6px 28px 6px 10px;border:1px solid var(--line);border-radius:4px;font-size:12px;width:210px">
+            <input type="text" id="excelSearchInput" placeholder="🔍 Search this sheet..." oninput="filterMasterExcelTable()" style="padding:6px 28px 6px 10px;border:1px solid var(--line);border-radius:4px;font-size:12px;width:190px">
             <span id="excelSearchClear" onclick="clearExcelSearch()" style="position:absolute;right:8px;cursor:pointer;color:var(--mut);font-size:12px;display:none" title="Clear search">✕</span>
           </div>
+          <button class="chip" id="btnSyncMasterHoldings" onclick="syncMasterExcelWithHoldings()" style="background:#059669;color:#fff;border-color:#059669;font-weight:600;margin-left:0;cursor:pointer" title="Auto-detect sold/bought stocks from dashboard holdings and update Master Sheet">🔄 Sync with Holdings</button>
           <button class="chip" onclick="document.getElementById('fileMasterExcel').click()" style="background:#0284c7;color:#fff;border-color:#0284c7;font-weight:600;margin-left:0;cursor:pointer" title="Upload new Master Excel or CSV file">📁 Upload File</button>
-          <button class="chip chip-export" onclick="exportCurrentExcelSheet()" style="margin-left:0">⬇ Export CSV</button>
+          <button class="chip chip-export" onclick="exportCurrentExcelSheet('xlsx')" style="margin-left:0" title="Download updated sheet as Excel (.xlsx)">📥 Download Excel</button>
+          <button class="chip chip-export" onclick="exportCurrentExcelSheet('csv')" style="margin-left:0" title="Download updated sheet as CSV (.csv)">📄 Download CSV</button>
         </div>
       </div>
 
@@ -2024,24 +2026,279 @@ function filterMasterExcelTable() {
   }
 }
 
-function exportCurrentExcelSheet() {
+function syncMasterExcelWithHoldings() {
   const me = DATA && DATA.masterExcel;
-  if (!me || !me.sheets || !currentExcelSheetName) return;
+  if (!me || !me.sheets || !currentExcelSheetName) {
+    setStatus('⚠ No Master Sheet loaded. Upload a Master Excel or CSV file first.');
+    return;
+  }
   const rawRows = me.sheets[currentExcelSheetName] || [];
-  if (!rawRows.length) return;
+  if (!rawRows.length) {
+    setStatus('⚠ Current Master Sheet is empty.');
+    return;
+  }
 
-  const csv = rawRows.map(r =>
-    (Array.isArray(r) ? r : [r]).map(v => {
-      const s = String(v != null ? v : '').replace(/"/g, '""');
-      return s.indexOf(',') > -1 || s.indexOf('\n') > -1 || s.indexOf('"') > -1 ? ('"' + s + '"') : s;
-    }).join(',')
-  ).join('\n');
+  const btn = document.getElementById('btnSyncMasterHoldings');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span>Syncing…';
+  }
+  setStatus('Syncing Master Sheet with current portfolio holdings…');
 
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (currentExcelSheetName || 'excel_sheet') + '_export.csv';
-  a.click();
+  try {
+    // 1. Scan for header row
+    let headerRowIdx = -1;
+    for (let r = 0; r < Math.min(rawRows.length, 10); r++) {
+      const row = rawRows[r] || [];
+      const nonBlank = row.map(c => String(c != null ? c : '').trim()).filter(Boolean);
+      if (nonBlank.length >= 3) { headerRowIdx = r; break; }
+    }
+    if (headerRowIdx === -1) headerRowIdx = 0;
+
+    const headerRow = rawRows[headerRowIdx] || [];
+    let colMap = {};
+    headerRow.forEach((h, i) => {
+      const n = String(h || '').trim().toUpperCase();
+      if (n) colMap[n] = i;
+    });
+
+    let stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+    let bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
+    let decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
+    let reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : colMap['NOTES']);
+
+    let p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
+              : (colMap['P1'] != null ? colMap['P1']
+              : (colMap['CURR P1'] != null ? colMap['CURR P1']
+              : (colMap['CURRENT_P1'] != null ? colMap['CURRENT_P1'] : null)));
+
+    let p2Col = colMap['CURRENT P2'] != null ? colMap['CURRENT P2']
+              : (colMap['P2'] != null ? colMap['P2']
+              : (colMap['CURR P2'] != null ? colMap['CURR P2']
+              : (colMap['CURRENT_P2'] != null ? colMap['CURRENT_P2'] : null)));
+
+    if (stockCol == null) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Sync with Holdings'; }
+      setStatus('⚠ Could not find Stock / Symbol column in this sheet.');
+      return;
+    }
+
+    // 2. Check if Q column is present; if missing, inject Q after C so sheet data is complete
+    const hasQ = colMap['Q'] != null || colMap['QUALITY'] != null || colMap['QLT'] != null;
+    const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
+    const qltList = (DATA && DATA.screeners && Array.isArray(DATA.screeners.quality))
+      ? DATA.screeners.quality.map(s => String(s || '').trim().toUpperCase())
+      : [];
+
+    if (!hasQ && cCol != null) {
+      const insertAt = cCol + 1;
+      headerRow.splice(insertAt, 0, 'Q');
+      for (let r = headerRowIdx + 1; r < rawRows.length; r++) {
+        const row = rawRows[r];
+        if (!row) continue;
+        const sym = String(row[stockCol] || '').trim().toUpperCase();
+        const isQ = sym && qltList.indexOf(sym) > -1;
+        row.splice(insertAt, 0, isQ ? '✓' : '');
+      }
+
+      // Re-map column indices after Q insertion
+      colMap = {};
+      headerRow.forEach((h, i) => {
+        const n = String(h || '').trim().toUpperCase();
+        if (n) colMap[n] = i;
+      });
+      stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+      bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
+      decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
+      reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : colMap['NOTES']);
+      p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
+            : (colMap['P1'] != null ? colMap['P1']
+            : (colMap['CURR P1'] != null ? colMap['CURR P1']
+            : (colMap['CURRENT_P1'] != null ? colMap['CURRENT_P1'] : null)));
+      p2Col = colMap['CURRENT P2'] != null ? colMap['CURRENT P2']
+            : (colMap['P2'] != null ? colMap['P2']
+            : (colMap['CURR P2'] != null ? colMap['CURR P2']
+            : (colMap['CURRENT_P2'] != null ? colMap['CURRENT_P2'] : null)));
+    }
+
+    // 3. Build live holdings sets from DATA.p1 and DATA.p2
+    const heldP1 = {};
+    (DATA.p1 || []).forEach(h => {
+      if (h && h.sym && Number(h.qty) > 0) heldP1[String(h.sym).trim().toUpperCase()] = Number(h.qty);
+    });
+
+    const heldP2 = {};
+    (DATA.p2 || []).forEach(h => {
+      if (h && h.sym && Number(h.qty) > 0) heldP2[String(h.sym).trim().toUpperCase()] = Number(h.qty);
+    });
+
+    let soldCount = 0;
+    let addedCount = 0;
+    const soldSymbols = [];
+
+    // 4. Process each data row
+    for (let r = headerRowIdx + 1; r < rawRows.length; r++) {
+      const row = rawRows[r];
+      if (!row || !row.length) continue;
+      const sym = String(row[stockCol] || '').trim().toUpperCase();
+      if (!sym) continue;
+
+      const hadP1 = p1Col != null && isCellChecked(row[p1Col]);
+      const hadP2 = p2Col != null && isCellChecked(row[p2Col]);
+      const nowP1 = !!heldP1[sym];
+      const nowP2 = !!heldP2[sym];
+
+      // Update P1 indicator
+      if (p1Col != null) {
+        if (hadP1 && !nowP1) { row[p1Col] = ''; }
+        else if (!hadP1 && nowP1) { row[p1Col] = '✓'; addedCount++; }
+      }
+
+      // Update P2 indicator
+      if (p2Col != null) {
+        if (hadP2 && !nowP2) { row[p2Col] = ''; }
+        else if (!hadP2 && nowP2) { row[p2Col] = '✓'; addedCount++; }
+      }
+
+      // Detect complete exit/sale: stock was in portfolio before, but now completely sold from both P1 and P2
+      if ((hadP1 || hadP2) && !nowP1 && !nowP2) {
+        if (bucketCol != null) row[bucketCol] = 'OUT';
+        if (decCol != null) row[decCol] = 'OUT';
+        if (reasonCol != null) {
+          const oldReason = String(row[reasonCol] || '').trim();
+          if (!oldReason.toLowerCase().includes('sold') && !oldReason.toLowerCase().includes('exited')) {
+            row[reasonCol] = 'Sold / Exited from portfolio. ' + (oldReason ? '(' + oldReason + ')' : '');
+          }
+        }
+        soldCount++;
+        soldSymbols.push(sym);
+      } else if (!hadP1 && !hadP2 && (nowP1 || nowP2)) {
+        // Stock newly bought into portfolio: ensure marked IN
+        if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() === 'OUT') {
+          row[bucketCol] = 'IN';
+        }
+        if (decCol != null && String(row[decCol] || '').trim().toUpperCase() === 'OUT') {
+          row[decCol] = 'IN';
+        }
+      }
+    }
+
+    // 5. Persist the updated sheet data to Google Sheets backend
+    const payload = {
+      filename: me.filename,
+      sheetNames: me.sheetNames,
+      sheets: me.sheets
+    };
+
+    google.script.run
+      .withSuccessHandler(res => {
+        if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Sync with Holdings'; }
+        DATA.masterExcel.saved = res.saved;
+        updateNotes();
+        renderCurrentSheetTable();
+        const msg = soldCount > 0
+          ? ('✅ Synced with Holdings: ' + soldCount + ' sold stock(s) (' + soldSymbols.slice(0, 5).join(', ') + (soldSymbols.length > 5 ? '…' : '') + ') updated to OUT.')
+          : (addedCount > 0
+              ? ('✅ Synced with Holdings: ' + addedCount + ' holding change(s) updated.')
+              : '✅ Master Sheet is already in sync with current holdings (no changes detected).');
+        setStatus(msg);
+      })
+      .withFailureHandler(err => {
+        if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Sync with Holdings'; }
+        renderCurrentSheetTable();
+        setStatus('⚠ Error saving synced Master Sheet to cloud: ' + (err && (err.message || err)));
+      })
+      .uploadMasterExcel(payload);
+
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Sync with Holdings'; }
+    setStatus('⚠ Sync failed: ' + err.message);
+  }
+}
+
+function exportCurrentExcelSheet(format) {
+  const me = DATA && DATA.masterExcel;
+  if (!me || !me.sheets || !currentExcelSheetName) {
+    setStatus('⚠ No Master Sheet loaded to export.');
+    return;
+  }
+  const rawRows = me.sheets[currentExcelSheetName] || [];
+  if (!rawRows.length) {
+    setStatus('⚠ Current Master Sheet is empty.');
+    return;
+  }
+
+  const origName = (me.filename || '').trim();
+  const isXlsxUpload = /\.xlsx$/i.test(origName);
+  const isXlsUpload = /\.xls$/i.test(origName);
+  const targetFormat = format || (isXlsxUpload || isXlsUpload ? 'xlsx' : 'csv');
+
+  // Identify header row
+  let headerRowIdx = -1;
+  for (let r = 0; r < Math.min(rawRows.length, 10); r++) {
+    const row = rawRows[r] || [];
+    const nonBlank = row.map(c => String(c != null ? c : '').trim()).filter(Boolean);
+    if (nonBlank.length >= 3) { headerRowIdx = r; break; }
+  }
+  if (headerRowIdx === -1) headerRowIdx = 0;
+
+  const headerRow = rawRows[headerRowIdx] || [];
+  const colMap = {};
+  headerRow.forEach((h, i) => {
+    const n = String(h || '').trim().toUpperCase();
+    if (n) colMap[n] = i;
+  });
+
+  const hasQ = colMap['Q'] != null || colMap['QUALITY'] != null || colMap['QLT'] != null;
+  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+  const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
+  const qltList = (DATA && DATA.screeners && Array.isArray(DATA.screeners.quality))
+    ? DATA.screeners.quality.map(s => String(s || '').trim().toUpperCase())
+    : [];
+
+  let exportRows = [];
+  if (!hasQ && cCol != null && stockCol != null) {
+    for (let r = 0; r < rawRows.length; r++) {
+      const row = (rawRows[r] || []).slice();
+      if (r < headerRowIdx) {
+        exportRows.push(row);
+      } else if (r === headerRowIdx) {
+        row.splice(cCol + 1, 0, 'Q');
+        exportRows.push(row);
+      } else {
+        const sym = String(row[stockCol] || '').trim().toUpperCase();
+        const isQ = sym && qltList.indexOf(sym) > -1;
+        row.splice(cCol + 1, 0, isQ ? '✓' : '');
+        exportRows.push(row);
+      }
+    }
+  } else {
+    exportRows = rawRows.map(r => (Array.isArray(r) ? r.slice() : [r]));
+  }
+
+  const baseName = (origName.replace(/\.[^/.]+$/, '') || currentExcelSheetName || 'Master_Sheet');
+
+  if (targetFormat === 'xlsx' && typeof XLSX !== 'undefined') {
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(exportRows);
+    XLSX.utils.book_append_sheet(wb, ws, currentExcelSheetName || 'Master');
+    XLSX.writeFile(wb, baseName + '_updated.xlsx');
+    setStatus('✅ Downloaded updated Excel sheet: ' + baseName + '_updated.xlsx');
+  } else {
+    const csv = exportRows.map(r =>
+      r.map(v => {
+        const s = String(v != null ? v : '').replace(/"/g, '""');
+        return s.indexOf(',') > -1 || s.indexOf('\n') > -1 || s.indexOf('"') > -1 ? ('"' + s + '"') : s;
+      }).join(',')
+    ).join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = baseName + '_updated.csv';
+    a.click();
+    setStatus('✅ Downloaded updated CSV sheet: ' + baseName + '_updated.csv');
+  }
 }
 function saveKeys(){
   google.script.run.withSuccessHandler(updateKeyStatus).saveApiKeys({
