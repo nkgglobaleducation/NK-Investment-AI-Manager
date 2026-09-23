@@ -261,7 +261,7 @@
             <col style="width:46px"><col style="width:48px"><col style="width:58px">
             <col style="width:44px"><col style="width:56px"><col style="width:56px">
             <col style="width:56px"><col style="width:80px"><col style="width:34px">
-            <col style="width:30px"><col style="width:50px">
+            <col style="width:30px"><col style="width:38px"><col style="width:50px">
             <col style="width:86px"><col><col style="width:58px">
           </colgroup>
           <thead><tr id="theadRow"></tr></thead>
@@ -439,6 +439,7 @@ let activeFilters = {};
 const FILTER_GROUPS = {
   EXIT:'call', RALLY:'call', BUY:'call', HOLD:'call', PENDING:'call',
   P1:'port', P2:'port', NOTHELD:'port',
+  IN:'inout', OUT:'inout',
   // Own group, so these AND with the others (Screener + Buy = buy-rated screener stocks).
   // SCRN and NOTSCRN sit in the SAME group, so selecting both OR's back to everything — the same
   // way P1 + P2 + Not held does.
@@ -465,6 +466,7 @@ const COLS = [
   {k:'mktCap',t:'MKT CAP'},
   {k:'pe',    t:'PE'},
   {k:'port',  t:'PORT'},
+  {k:'inOut', t:'IN/OUT'},
   {k:'scr',   t:'SCRN'},
   {k:'sug',   t:'AI CALL', l:1},
   {k:'rat',   t:'AI RATIONALE', l:1},
@@ -574,18 +576,83 @@ function isEtf(sym){
   return /BEES$|ETF$/.test(s) || /^MON\d+/.test(s) || /^MONQ\d+/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1;
 }
 
+function getMasterSheetInOutMap() {
+  const map = {};
+  const me = DATA && DATA.masterExcel;
+  if (!me || !me.sheets) return map;
+
+  const sheetNames = me.sheetNames || Object.keys(me.sheets);
+  sheetNames.forEach(sName => {
+    const rows = me.sheets[sName] || [];
+    if (!rows || !rows.length) return;
+
+    let headerRowIdx = -1;
+    for (let r = 0; r < Math.min(rows.length, 10); r++) {
+      const row = rows[r] || [];
+      const nonBlank = row.map(c => String(c != null ? c : '').trim()).filter(Boolean);
+      if (nonBlank.length >= 3) { headerRowIdx = r; break; }
+    }
+    if (headerRowIdx === -1) headerRowIdx = 0;
+
+    const headerRow = rows[headerRowIdx] || [];
+    const colMap = {};
+    headerRow.forEach((h, i) => {
+      const n = String(h || '').trim().toUpperCase();
+      if (n) colMap[n] = i;
+    });
+
+    const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+    if (stockCol == null) return;
+
+    const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
+    const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
+
+    const sheetUpper = String(sName).trim().toUpperCase();
+    const isSheetIN = sheetUpper === 'IN' || sheetUpper.startsWith('IN ');
+    const isSheetOUT = sheetUpper === 'OUT' || sheetUpper.startsWith('OUT ');
+
+    for (let r = headerRowIdx + 1; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row || !row.length) continue;
+      const sym = String(row[stockCol] || '').trim().toUpperCase();
+      if (!sym) continue;
+
+      let val = '';
+      if (bucketCol != null) {
+        const b = String(row[bucketCol] || '').trim().toUpperCase();
+        if (b === 'IN' || b === 'OUT') val = b;
+      }
+      if (!val && decCol != null) {
+        const d = String(row[decCol] || '').trim().toUpperCase();
+        if (d === 'IN' || d === 'OUT') val = d;
+      }
+      if (!val) {
+        if (isSheetIN) val = 'IN';
+        else if (isSheetOUT) val = 'OUT';
+      }
+
+      if (val) {
+        map[sym] = val;
+      }
+    }
+  });
+
+  return map;
+}
+
 /* ==================== ROW ASSEMBLY ==================== */
 function rebuild(){
   ROWS = [];
+  const inOutMap = getMasterSheetInOutMap();
   const seen = {};
-  DATA.p1.forEach(h => { ROWS.push(makeRow(h,'P1')); seen[h.sym]=1; });
-  DATA.p2.forEach(h => { ROWS.push(makeRow(h,'P2')); seen[h.sym]=1; });
-  DATA.screener.forEach(s => { if(!seen[s]) { ROWS.push(makeRow({sym:s,qty:0,avg:0}, '')); seen[s]=1; } });
+  DATA.p1.forEach(h => { ROWS.push(makeRow(h,'P1', inOutMap)); seen[h.sym]=1; });
+  DATA.p2.forEach(h => { ROWS.push(makeRow(h,'P2', inOutMap)); seen[h.sym]=1; });
+  DATA.screener.forEach(s => { if(!seen[s]) { ROWS.push(makeRow({sym:s,qty:0,avg:0}, '', inOutMap)); seen[s]=1; } });
   if (DATA.screenerHistory) {
     Object.keys(DATA.screenerHistory).forEach(s => {
       const info = DATA.screenerHistory[s];
       if (info && (info.status === 'DROPOUT' || info.status === 'ETF') && !seen[s]) {
-        ROWS.push(makeRow({sym:s, qty:0, avg:0}, ''));
+        ROWS.push(makeRow({sym:s, qty:0, avg:0}, '', inOutMap));
         seen[s] = 1;
       }
     });
@@ -593,7 +660,7 @@ function rebuild(){
   renderStats(); renderFilters(); renderTable(); renderIndices();
 }
 
-function makeRow(h, port){
+function makeRow(h, port, inOutMap){
   const pr = DATA.prices[h.sym] || {};
   const ai = DATA.ai[h.sym] || {};
   const ltp = pr.ltp || 0;
@@ -613,6 +680,9 @@ function makeRow(h, port){
   
   // %Low w.r.t all time high: ((AllTimeHigh - LTP) / AllTimeHigh) * 100
   const lowATHPct = (allTimeHigh > 0 && ltp > 0) ? ((allTimeHigh - ltp) / allTimeHigh * 100) : 0;
+
+  // Master Sheet IN / OUT determination
+  const inOut = (inOutMap && inOutMap[h.sym]) || '';
 
   // Screener 12-month status & screener membership
   const etf = isEtf(h.sym);
@@ -649,6 +719,7 @@ function makeRow(h, port){
     mktCap: pr.mktCap || 0,
     pe: pr.pe || 0,
     port:port,
+    inOut: inOut,
     scr: scrObj,
     sug: ai.suggestion || '',
     rat: ai.rationale || '',
@@ -752,6 +823,8 @@ function matchChip(key, r){
     case 'P1':       return r.port==='P1';
     case 'P2':       return r.port==='P2';
     case 'NOTHELD':  return !r.port;
+    case 'IN':       return r.inOut==='IN';
+    case 'OUT':      return r.inOut==='OUT';
     case 'SCRN':     return !!(r.scr && r.scr.active);
     case 'SCRN_CMP': return !!(r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && r.scr.status !== 'ETF')));
     case 'SCRN_QLT': return !!(r.scr && r.scr.qlt);
@@ -785,6 +858,8 @@ function renderFilters(){
     P1: ROWS.filter(r=>r.port==='P1').length,
     P2: ROWS.filter(r=>r.port==='P2').length,
     NOTHELD: ROWS.filter(r=>!r.port).length,
+    IN: ROWS.filter(r=>r.inOut==='IN').length,
+    OUT: ROWS.filter(r=>r.inOut==='OUT').length,
     SCRN: ROWS.filter(r=>r.scr && r.scr.active).length,
     SCRN_CMP: ROWS.filter(r=>r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && r.scr.status !== 'ETF'))).length,
     SCRN_QLT: ROWS.filter(r=>r.scr && r.scr.qlt).length,
@@ -798,6 +873,7 @@ function renderFilters(){
     ['ALL','All'],['EXIT','Exit now'],['RALLY','Sell on rally'],['BUY','Buy'],
     ['HOLD','Hold'],['PENDING','Pending'],['P1','P1'],['P2','P2'],
     ['NOTHELD','Not held'],
+    ['IN','IN'],['OUT','OUT'],
     ['SCRN','All Screeners'],['SCRN_CMP','Compounder'],['SCRN_QLT','Quality'],
     ['CORE','Core 12M'],['DROPOUT','Dropouts'],['NOTSCRN','Non-screener'],
     ['ETF','ETFs'],['WATCH','Watchlist']
@@ -838,6 +914,10 @@ function renderTable(){
       if (sortKey === 'star') {
         x = DATA.watchlist.indexOf(a.sym) > -1 ? 1 : 0;
         y = DATA.watchlist.indexOf(b.sym) > -1 ? 1 : 0;
+      } else if (sortKey === 'inOut') {
+        const order = { 'IN': 1, 'OUT': 2, '': 3 };
+        x = order[a.inOut || ''] || 3;
+        y = order[b.inOut || ''] || 3;
       } else if (sortKey === 'scr') {
         const getVal = r => {
           if (!r.scr) return '';
@@ -873,6 +953,7 @@ function renderTable(){
       +'<td title="'+fmtMktCap(r.mktCap)+'">'+fmtMktCap(r.mktCap)+'</td>'
       +'<td>'+fmtPE(r.pe)+'</td>'
       +'<td>'+(r.port?'<span class="badge b-'+r.port.toLowerCase()+'">'+r.port+'</span>':'<span class="b-none">—</span>')+'</td>'
+      +'<td>'+(r.inOut==='IN'?'<span class="badge b-buy" style="font-size:9px">IN</span>':(r.inOut==='OUT'?'<span class="badge b-exit" style="font-size:9px">OUT</span>':'<span class="b-none">—</span>'))+'</td>'
       +'<td>'+renderScrBadge(r.scr)+'</td>'
       +'<td class="l">'+badge(r.sug)+'</td>'
       +'<td class="l rat" title="'+String(r.rat).replace(/"/g,'&quot;')+'">'+(r.rat||'—')+'</td>'
@@ -1122,6 +1203,7 @@ function exportCSV(){
     r.sym,r.qty,r.avg,r.ltp,r.inv.toFixed(0),r.cur.toFixed(0),r.pnl.toFixed(0),
     r.netChg.toFixed(1),r.dayChg.toFixed(1),r.low52w.toFixed(1),r.high52w.toFixed(1),
     r.lowATH.toFixed(1),(r.mktCap/1e7).toFixed(0),r.pe.toFixed(1),r.port,
+    r.inOut || '',
     (r.scr ? (r.scr.status + (r.scr.score ? (' (' + r.scr.score + ')') : '')) : ''),
     r.sug,'"'+String(r.rat).replace(/"/g,'""')+'"',r.alt
   ].join(','));
@@ -1410,6 +1492,7 @@ function loadMasterExcel() {
         activeExcelFilters = {};
         currentExcelSheetName = sheetNames[0] || '';
         updateNotes();
+        rebuild();
         showTab('excel');
         renderMasterExcel();
         setStatus('Preview mode: simulated Excel upload for ' + f.name);
@@ -1429,6 +1512,7 @@ function loadMasterExcel() {
           activeExcelFilters = {};
           currentExcelSheetName = res.sheetNames[0] || '';
           updateNotes();
+          rebuild();
           showTab('excel');
           renderMasterExcel();
           setStatus('✅ Master Excel uploaded: ' + res.filename);
@@ -2196,6 +2280,7 @@ function syncMasterExcelWithHoldings() {
         DATA.masterExcel.saved = res.saved;
         updateNotes();
         renderCurrentSheetTable();
+        rebuild();
         const msg = soldCount > 0
           ? ('✅ Synced with Holdings: ' + soldCount + ' sold stock(s) (' + soldSymbols.slice(0, 5).join(', ') + (soldSymbols.length > 5 ? '…' : '') + ') updated to OUT.')
           : (addedCount > 0
