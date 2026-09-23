@@ -247,6 +247,7 @@
         <button class="chip chip-stop hidden" id="btnStop" onclick="stopAI()">⏹ Stop</button>
         <button class="chip" onclick="freshAI()" title="Clear saved AI results and re-analyze all stocks with today's data">↺ Fresh Analysis</button>
         <button class="chip" id="btnChipConsistency" onclick="refreshConsistency()" style="background:#0284c7;color:#fff;font-weight:600" title="Recalculate 12-Month Screener Consistency & Dropouts">🔄 Refresh Consistency</button>
+        <button class="chip" id="btnToggleAiCols" onclick="toggleAiColumns()" title="Hide or show AI Call, AI Rationale, and Alternate columns">👁 Hide AI Columns</button>
         <span class="status-msg" id="statusMsg"></span>
         <button class="chip chip-export" onclick="exportCSV()">⬇ Export</button>
       </div>
@@ -255,7 +256,7 @@
 
       <div class="tblwrap">
         <table id="tbl">
-          <colgroup>
+          <colgroup id="tblColgroup">
             <col style="width:22px"><col style="width:86px"><col style="width:32px">
             <col style="width:54px"><col style="width:54px"><col style="width:46px">
             <col style="width:46px"><col style="width:48px"><col style="width:58px">
@@ -468,13 +469,46 @@ const COLS = [
   {k:'port',  t:'PORT'},
   {k:'inOut', t:'IN/OUT'},
   {k:'scr',   t:'SCRN'},
-  {k:'sug',   t:'AI CALL', l:1},
-  {k:'rat',   t:'AI RATIONALE', l:1},
-  {k:'alt',   t:'ALT', l:1}
+  {k:'sug',   t:'AI CALL',     l:1, isAi:true},
+  {k:'rat',   t:'AI RATIONALE',l:1, isAi:true},
+  {k:'alt',   t:'ALT',         l:1, isAi:true}
 ];
+
+let hideAiCols = (function(){
+  try { return localStorage.getItem('nk_hide_ai_cols') === 'true'; } catch(e){ return false; }
+})();
+
+function getActiveCols() {
+  return hideAiCols ? COLS.filter(c => !c.isAi) : COLS;
+}
+
+function toggleAiColumns() {
+  hideAiCols = !hideAiCols;
+  try { localStorage.setItem('nk_hide_ai_cols', hideAiCols ? 'true' : 'false'); } catch (e) {}
+  updateAiColsButton();
+  buildHeader();
+  renderTable();
+}
+
+function updateAiColsButton() {
+  const btn = document.getElementById('btnToggleAiCols');
+  if (!btn) return;
+  if (hideAiCols) {
+    btn.innerHTML = '👁 Show AI Columns';
+    btn.style.background = 'var(--navy)';
+    btn.style.color = '#fff';
+    btn.title = 'Display AI Call, AI Rationale, and Alternate columns';
+  } else {
+    btn.innerHTML = '👁 Hide AI Columns';
+    btn.style.background = '#fff';
+    btn.style.color = '#44526b';
+    btn.title = 'Hide AI Call, AI Rationale, and Alternate columns to widen remaining columns';
+  }
+}
 
 /* ==================== INIT ==================== */
 window.onload = () => {
+  updateAiColsButton();
   buildHeader();
   if (!IS_APPS_SCRIPT) {
     document.getElementById('restoreNote').textContent =
@@ -730,10 +764,51 @@ function makeRow(h, port, inOutMap){
 
 /* ==================== RENDER ==================== */
 function buildHeader(){
+  const cols = getActiveCols();
   const tr = document.getElementById('theadRow');
-  tr.innerHTML = COLS.map(c =>
+  tr.innerHTML = cols.map(c =>
     '<th class="'+(c.l?'l':'')+'" '+(c.sortable===false?'':'onclick="sortBy(\''+c.k+'\')"')+'>'
     + c.t + (c.sortable===false?'':'<span class="arr">⇅</span>') + '</th>').join('');
+  buildColgroup();
+}
+
+function buildColgroup(){
+  const cg = document.getElementById('tblColgroup');
+  if (!cg) return;
+  if (hideAiCols) {
+    // 18 columns proportionally widened to fit 100% viewport width
+    cg.innerHTML = `
+      <col style="width:26px">
+      <col>
+      <col style="width:40px">
+      <col style="width:62px">
+      <col style="width:62px">
+      <col style="width:58px">
+      <col style="width:58px">
+      <col style="width:60px">
+      <col style="width:62px">
+      <col style="width:52px">
+      <col style="width:66px">
+      <col style="width:66px">
+      <col style="width:66px">
+      <col style="width:90px">
+      <col style="width:42px">
+      <col style="width:38px">
+      <col style="width:46px">
+      <col style="width:64px">
+    `;
+  } else {
+    // 21 columns standard layout with flexible AI RATIONALE
+    cg.innerHTML = `
+      <col style="width:22px"><col style="width:86px"><col style="width:32px">
+      <col style="width:54px"><col style="width:54px"><col style="width:46px">
+      <col style="width:46px"><col style="width:48px"><col style="width:58px">
+      <col style="width:44px"><col style="width:56px"><col style="width:56px">
+      <col style="width:56px"><col style="width:80px"><col style="width:34px">
+      <col style="width:30px"><col style="width:38px"><col style="width:50px">
+      <col style="width:86px"><col><col style="width:58px">
+    `;
+  }
 }
 
 function fmtMoney(v){
@@ -956,9 +1031,11 @@ function renderTable(){
       +'<td>'+(r.port?'<span class="badge b-'+r.port.toLowerCase()+'">'+r.port+'</span>':'<span class="b-none">—</span>')+'</td>'
       +'<td>'+(r.inOut==='IN'?'<span class="badge b-buy" style="font-size:9px">IN</span>':(r.inOut==='OUT'?'<span class="badge b-exit" style="font-size:9px">OUT</span>':'<span class="b-none">—</span>'))+'</td>'
       +'<td>'+renderScrBadge(r.scr)+'</td>'
-      +'<td class="l">'+badge(r.sug)+'</td>'
-      +'<td class="l rat" title="'+String(r.rat).replace(/"/g,'&quot;')+'">'+(r.rat||'—')+'</td>'
-      +'<td class="l" title="'+r.alt+'">'+(r.alt||'—')+'</td>'
+      +(!hideAiCols
+        ? ('<td class="l">'+badge(r.sug)+'</td>'
+          +'<td class="l rat" title="'+String(r.rat).replace(/"/g,'&quot;')+'">'+(r.rat||'—')+'</td>'
+          +'<td class="l" title="'+r.alt+'">'+(r.alt||'—')+'</td>')
+        : '')
       +'</tr>';
   }).join('');
 }
