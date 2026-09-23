@@ -776,26 +776,26 @@ function buildColgroup(){
   const cg = document.getElementById('tblColgroup');
   if (!cg) return;
   if (hideAiCols) {
-    // 18 columns proportionally widened to fit 100% viewport width
+    // 18 columns proportionally distributed across 100% viewport width
     cg.innerHTML = `
-      <col style="width:26px">
-      <col>
-      <col style="width:40px">
-      <col style="width:62px">
-      <col style="width:62px">
-      <col style="width:58px">
-      <col style="width:58px">
-      <col style="width:60px">
-      <col style="width:62px">
-      <col style="width:52px">
-      <col style="width:66px">
-      <col style="width:66px">
-      <col style="width:66px">
-      <col style="width:90px">
-      <col style="width:42px">
-      <col style="width:38px">
-      <col style="width:46px">
-      <col style="width:64px">
+      <col style="width:2.0%">
+      <col style="width:11.0%">
+      <col style="width:4.0%">
+      <col style="width:5.5%">
+      <col style="width:5.5%">
+      <col style="width:6.0%">
+      <col style="width:6.0%">
+      <col style="width:6.0%">
+      <col style="width:5.0%">
+      <col style="width:5.0%">
+      <col style="width:6.5%">
+      <col style="width:6.5%">
+      <col style="width:6.5%">
+      <col style="width:8.0%">
+      <col style="width:4.5%">
+      <col style="width:3.5%">
+      <col style="width:3.5%">
+      <col style="width:5.0%">
     `;
   } else {
     // 21 columns standard layout with flexible AI RATIONALE
