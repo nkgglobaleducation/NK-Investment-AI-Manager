@@ -406,6 +406,37 @@ function getCycleKey_(d) {
   return cYear + '-' + (cMonth < 10 ? '0' : '') + cMonth;
 }
 
+// Starting cycle for screener consistency tracking (October 15th cut-off).
+const SCREENER_START_CYCLE = '2026-10';
+
+// Returns the list of active monthly cycle keys from current cycle back to October,
+// expanding month-by-month (1 in Oct, 2 in Nov, etc.) capped at a maximum of 12 cycles.
+function getActiveCycles_(d) {
+  const curKey = getCycleKey_(d);
+  const startKey = SCREENER_START_CYCLE;
+
+  const curParts = curKey.split('-').map(Number);
+  const startParts = startKey.split('-').map(Number);
+
+  let monthsDiff = (curParts[0] - startParts[0]) * 12 + (curParts[1] - startParts[1]);
+  if (monthsDiff < 0) monthsDiff = 0;
+
+  const totalCycles = Math.min(12, monthsDiff + 1);
+
+  let y = curParts[0], m = curParts[1];
+  const cycles = [];
+  for (let i = 0; i < totalCycles; i++) {
+    let cy = y;
+    let cm = m - i;
+    while (cm <= 0) {
+      cm += 12;
+      cy -= 1;
+    }
+    cycles.push(cy + '-' + (cm < 10 ? '0' : '') + cm);
+  }
+  return cycles;
+}
+
 // Returns the last 12 monthly cycle keys starting from current cycle down to 11 cycles back.
 function getLast12Cycles_(d) {
   const curKey = getCycleKey_(d);
@@ -429,15 +460,20 @@ function readScreenerHistory_() {
   if (!sh || sh.getLastRow() < 2) return {};
   const rows = sh.getRange(2, 1, sh.getLastRow() - 1, 6).getValues();
   const history = {};
+  const curCycles = getActiveCycles_(new Date());
+  const totalCycles = curCycles.length;
+
   rows.forEach(r => {
     const sym = String(r[0] || '').trim().toUpperCase();
     if (!sym) return;
     let histObj = {};
     try { histObj = JSON.parse(r[5] || '{}'); } catch (e) { histObj = {}; }
     const scoreNum = Number(r[3]) || 0;
+    const rawScore = String(r[2] || '').trim();
+    const scoreStr = (rawScore && /^\d+\/\d+$/.test(rawScore)) ? rawScore : (scoreNum + '/' + totalCycles);
     history[sym] = {
       status: String(r[1] || 'INACTIVE'),
-      score: scoreNum + '/12',
+      score: scoreStr,
       scoreNum: scoreNum,
       lastUploaded: String(r[4] || ''),
       cycles: histObj
@@ -447,9 +483,10 @@ function readScreenerHistory_() {
 }
 
 function updateScreenerHistory_(uploadedCodes, nowStr) {
-  const curCycles = getLast12Cycles_(new Date());
+  const curCycles = getActiveCycles_(new Date());
   const curCycle = curCycles[0];
-  const prevCycle = curCycles[1];
+  const prevCycle = curCycles[1] || curCycles[0];
+  const totalCycles = curCycles.length;
 
   const existing = readScreenerHistory_();
   const uploadedSet = {};
@@ -472,22 +509,22 @@ function updateScreenerHistory_(uploadedCodes, nowStr) {
 
     let scoreNum = 0;
     curCycles.forEach(c => { if (cyclesObj[c]) scoreNum++; });
-    let scoreStr = scoreNum + '/12';
+    let scoreStr = scoreNum + '/' + totalCycles;
 
     let statusTag = 'INACTIVE';
     if (isEtf_(sym)) {
-      // Uploaded ETFs are permanently screened: full 12/12 score, never drop out
+      // Uploaded ETFs are permanently screened: full score, never drop out
       statusTag = 'ETF';
-      scoreNum = 12;
-      scoreStr = '12/12';
+      scoreNum = totalCycles;
+      scoreStr = totalCycles + '/' + totalCycles;
       curCycles.forEach(c => { cyclesObj[c] = 1; });
     } else if (isUploaded) {
-      if (scoreNum >= 6) statusTag = 'CORE';
-      else if (scoreNum >= 3) statusTag = 'REGULAR';
+      if (scoreNum === totalCycles) statusTag = 'CORE';
+      else if (scoreNum / totalCycles >= 0.5) statusTag = 'REGULAR';
       else statusTag = 'NEW';
     } else {
-      // Not in latest upload: was it in the immediate previous cycle or had >= 2 appearances in 12M?
-      if (cyclesObj[prevCycle] === 1 || scoreNum >= 2) {
+      // Not in latest upload: was it in the immediate previous cycle or had >= 1 appearances in active series?
+      if (cyclesObj[prevCycle] === 1 || scoreNum >= 1) {
         statusTag = 'DROPOUT';
       }
     }
@@ -563,7 +600,9 @@ function calculateDropoutTimeline_(cyclesObj, curCycles) {
   const passedFrom = passedKeys[0];
   const passedTo = passedKeys[passedKeys.length - 1];
   const passedMonths = passedKeys.length;
-  const passedPeriod = formatCycleName_(passedFrom) + ' – ' + formatCycleName_(passedTo) + ' (' + passedMonths + ' cycle' + (passedMonths > 1 ? 's' : '') + ')';
+  const passedPeriod = (passedFrom === passedTo)
+    ? (formatCycleName_(passedFrom) + ' (1 cycle)')
+    : (formatCycleName_(passedFrom) + ' – ' + formatCycleName_(passedTo) + ' (' + passedMonths + ' cycle' + (passedMonths > 1 ? 's' : '') + ')');
 
   // Calculate failed months count going backwards from curCycle
   let failedMonths = 0;
@@ -887,7 +926,7 @@ function getInitialData() {
 
   let dropouts = readDropouts_();
   if (!dropouts.length && screenerHistory && Object.keys(screenerHistory).length) {
-    dropouts = updateDropoutsSheet_(screenerHistory, getLast12Cycles_(), nowIST_());
+    dropouts = updateDropoutsSheet_(screenerHistory, getActiveCycles_(), nowIST_());
   }
 
   return {

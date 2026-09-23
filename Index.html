@@ -694,12 +694,13 @@ function makeRow(h, port, inOutMap){
   let scrObj = null;
   if (etf) {
     // Uploaded ETFs are permanently screened
-    scrObj = { active: true, status: 'ETF', score: '12/12', cmp: inCmp, qlt: inQlt };
+    const etfScore = (scInfo && scInfo.score) ? scInfo.score : '1/1';
+    scrObj = { active: true, status: 'ETF', score: etfScore, cmp: inCmp, qlt: inQlt };
   } else if (inScreener || (scInfo && scInfo.status === 'DROPOUT')) {
     const rawScore = scInfo ? String(scInfo.score || '') : '';
-    const cleanScore = (rawScore && !rawScore.includes('GMT') && /^\d+\/12$/.test(rawScore))
+    const cleanScore = (rawScore && !rawScore.includes('GMT') && /^\d+\/\d+$/.test(rawScore))
       ? rawScore
-      : ((scInfo && scInfo.scoreNum != null ? scInfo.scoreNum : 1) + '/12');
+      : ((scInfo && scInfo.scoreNum != null ? scInfo.scoreNum : 1) + '/1');
     if (inScreener) {
       const st = scInfo ? scInfo.status : 'NEW';
       scrObj = { active: true, status: st, score: cleanScore, cmp: inCmp, qlt: inQlt };
@@ -774,7 +775,7 @@ function renderScrBadge(scr){
     return '<span class="badge b-buy" style="font-size:9px" title="Permanently Screened ETF (Core Index/Commodity Asset)">✓ ETF</span>';
   }
   if (scr.status === 'DROPOUT') {
-    return '<span class="badge b-exit" style="font-size:9px" title="Recent Dropout: passed ' + scr.score + ' monthly cycles previously, but missed current cutoff">⚠ DROP</span>';
+    return '<span class="badge b-exit" style="font-size:9px" title="Recent Dropout: consistency ' + scr.score + ', missed current cutoff">⚠ DROP</span>';
   }
 
   // Determine label and style based on screener qualifications
@@ -809,7 +810,7 @@ function renderScrBadge(scr){
 
   const passedStr = names.length ? ('Passed: ' + names.join(', ')) : 'Screened Stock';
   const tierStr = (scr.status && scr.status !== 'INACTIVE' && scr.status !== 'NEW' && scr.status !== 'DROPOUT') ? (' (' + scr.status + ')') : '';
-  const tip = passedStr + ' | 12M Consistency: ' + (scr.score || '—') + tierStr;
+  const tip = passedStr + ' | Consistency: ' + (scr.score || '—') + tierStr;
   return '<span class="badge ' + bClass + '" style="font-size:9px" title="' + tip + '">' + label + '</span>';
 }
 
@@ -1301,8 +1302,11 @@ function renderDropouts() {
         y = (b.screenersDropped || '').includes('Quality') ? 1 : 0;
       } else if (dropSortKey === 'score12m') {
         const parseScore = s => {
-          const m = String(s || '').match(/^(\d+)\/12/);
-          return m ? parseInt(m[1], 10) : 0;
+          const m = String(s || '').match(/^(\d+)\/(\d+)/);
+          if (!m) return 0;
+          const num = parseInt(m[1], 10);
+          const den = parseInt(m[2], 10) || 1;
+          return (num / den) * 1000 + num;
         };
         x = parseScore(a.score12m);
         y = parseScore(b.score12m);
