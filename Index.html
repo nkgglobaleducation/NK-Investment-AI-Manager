@@ -101,6 +101,7 @@
   .b-hold{background:#e9f0fb;color:var(--blue)}
   .b-rally{background:#fdf3dd;color:var(--amber)}
   .b-p1{background:#e9f0fb;color:var(--blue)} .b-p2{background:#fdeaea;color:var(--red)}
+  .b-etf{background:#ede9fe;color:#6d28d9;border:1px solid #ddd6fe}
   .b-none{color:#a7b2c4}
   .tick{color:var(--green);font-weight:700}
   /* rationale: the ONE column allowed to wrap (2 lines) */
@@ -440,12 +441,11 @@ let activeFilters = {};
 const FILTER_GROUPS = {
   EXIT:'call', RALLY:'call', BUY:'call', HOLD:'call', PENDING:'call',
   P1:'port', P2:'port', NOTHELD:'port',
-  IN:'inout', OUT:'inout',
+  IN:'inout', OUT:'inout', ETF:'inout',
   // Own group, so these AND with the others (Screener + Buy = buy-rated screener stocks).
   // SCRN and NOTSCRN sit in the SAME group, so selecting both OR's back to everything — the same
   // way P1 + P2 + Not held does.
   SCRN:'scrn', SCRN_CMP:'scrn', SCRN_QLT:'scrn', CORE:'scrn', DROPOUT:'scrn', NOTSCRN:'scrn',
-  ETF:'asset',
   WATCH:'watch'
 };
 let pollTimer = null;
@@ -467,7 +467,7 @@ const COLS = [
   {k:'mktCap',t:'MKT CAP'},
   {k:'pe',    t:'PE'},
   {k:'port',  t:'PORT'},
-  {k:'inOut', t:'IN/OUT'},
+  {k:'inOut', t:'IN / OUT / ETF'},
   {k:'scr',   t:'SCRN'},
   {k:'sug',   t:'AI CALL',     l:1, isAi:true},
   {k:'rat',   t:'AI RATIONALE',l:1, isAi:true},
@@ -651,6 +651,11 @@ function getMasterSheetInOutMap() {
       const sym = String(row[stockCol] || '').trim().toUpperCase();
       if (!sym) continue;
 
+      if (isEtf(sym)) {
+        map[sym] = 'ETF';
+        continue;
+      }
+
       let val = '';
       if (bucketCol != null) {
         const b = String(row[bucketCol] || '').trim().toUpperCase();
@@ -715,11 +720,11 @@ function makeRow(h, port, inOutMap){
   // %Low w.r.t all time high: ((AllTimeHigh - LTP) / AllTimeHigh) * 100
   const lowATHPct = (allTimeHigh > 0 && ltp > 0) ? ((allTimeHigh - ltp) / allTimeHigh * 100) : 0;
 
-  // Master Sheet IN / OUT determination
-  const inOut = (inOutMap && inOutMap[h.sym]) || '';
-
   // Screener 12-month status & screener membership
   const etf = isEtf(h.sym);
+
+  // Master Sheet Candidate determination: ETFs are treated as ETF candidates, not IN/OUT
+  const inOut = etf ? 'ETF' : ((inOutMap && inOutMap[h.sym]) || '');
   const scrs = DATA.screeners || {};
   const inCmp = (scrs.compounder && scrs.compounder.indexOf(h.sym) > -1) || false;
   const inQlt = (scrs.quality && scrs.quality.indexOf(h.sym) > -1) || false;
@@ -779,7 +784,7 @@ function buildColgroup(){
     // 18 columns proportionally distributed across 100% viewport width
     cg.innerHTML = `
       <col style="width:2.0%">
-      <col style="width:11.0%">
+      <col style="width:10.5%">
       <col style="width:4.0%">
       <col style="width:5.5%">
       <col style="width:5.5%">
@@ -791,10 +796,10 @@ function buildColgroup(){
       <col style="width:6.5%">
       <col style="width:6.5%">
       <col style="width:6.5%">
-      <col style="width:8.0%">
+      <col style="width:7.5%">
       <col style="width:4.5%">
       <col style="width:3.5%">
-      <col style="width:3.5%">
+      <col style="width:4.5%">
       <col style="width:5.0%">
     `;
   } else {
@@ -804,8 +809,8 @@ function buildColgroup(){
       <col style="width:54px"><col style="width:54px"><col style="width:46px">
       <col style="width:46px"><col style="width:48px"><col style="width:58px">
       <col style="width:44px"><col style="width:56px"><col style="width:56px">
-      <col style="width:56px"><col style="width:80px"><col style="width:34px">
-      <col style="width:30px"><col style="width:38px"><col style="width:50px">
+      <col style="width:56px"><col style="width:74px"><col style="width:34px">
+      <col style="width:30px"><col style="width:48px"><col style="width:50px">
       <col style="width:86px"><col><col style="width:58px">
     `;
   }
@@ -899,15 +904,15 @@ function matchChip(key, r){
     case 'P1':       return r.port==='P1';
     case 'P2':       return r.port==='P2';
     case 'NOTHELD':  return !r.port;
-    case 'IN':       return r.inOut==='IN';
-    case 'OUT':      return r.inOut==='OUT';
+    case 'IN':       return r.inOut==='IN' && !isEtf(r.sym);
+    case 'OUT':      return r.inOut==='OUT' && !isEtf(r.sym);
     case 'SCRN':     return !!(r.scr && r.scr.active);
     case 'SCRN_CMP': return !!(r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && r.scr.status !== 'ETF')));
     case 'SCRN_QLT': return !!(r.scr && r.scr.qlt);
     case 'CORE':     return !!(r.scr && (r.scr.status === 'CORE' || r.scr.status === 'ETF'));
     case 'DROPOUT':  return !!(r.scr && r.scr.status === 'DROPOUT');
     case 'NOTSCRN':  return !(r.scr && r.scr.active);
-    case 'ETF':      return isEtf(r.sym);
+    case 'ETF':      return r.inOut==='ETF' || isEtf(r.sym);
     case 'WATCH':    return DATA.watchlist.indexOf(r.sym)>-1;
   }
   return true;
@@ -934,25 +939,25 @@ function renderFilters(){
     P1: ROWS.filter(r=>r.port==='P1').length,
     P2: ROWS.filter(r=>r.port==='P2').length,
     NOTHELD: ROWS.filter(r=>!r.port).length,
-    IN: ROWS.filter(r=>r.inOut==='IN').length,
-    OUT: ROWS.filter(r=>r.inOut==='OUT').length,
+    IN: ROWS.filter(r=>r.inOut==='IN' && !isEtf(r.sym)).length,
+    OUT: ROWS.filter(r=>r.inOut==='OUT' && !isEtf(r.sym)).length,
     SCRN: ROWS.filter(r=>r.scr && r.scr.active).length,
     SCRN_CMP: ROWS.filter(r=>r.scr && (r.scr.cmp || (r.scr.active && !r.scr.qlt && r.scr.status !== 'ETF'))).length,
     SCRN_QLT: ROWS.filter(r=>r.scr && r.scr.qlt).length,
     CORE: ROWS.filter(r=>r.scr && (r.scr.status === 'CORE' || r.scr.status === 'ETF')).length,
     DROPOUT: ROWS.filter(r=>r.scr && r.scr.status === 'DROPOUT').length,
     NOTSCRN: ROWS.filter(r=>!r.scr || !r.scr.active).length,
-    ETF: ROWS.filter(r=>isEtf(r.sym)).length,
+    ETF: ROWS.filter(r=>r.inOut==='ETF' || isEtf(r.sym)).length,
     WATCH: DATA.watchlist.length
   };
   const defs = [
     ['ALL','All'],['EXIT','Exit now'],['RALLY','Sell on rally'],['BUY','Buy'],
     ['HOLD','Hold'],['PENDING','Pending'],['P1','P1'],['P2','P2'],
     ['NOTHELD','Not held'],
-    ['IN','IN'],['OUT','OUT'],
+    ['IN','IN'],['OUT','OUT'],['ETF','ETF'],
     ['SCRN','All Screeners'],['SCRN_CMP','Compounder'],['SCRN_QLT','Quality'],
     ['CORE','Core 12M'],['DROPOUT','Dropouts'],['NOTSCRN','Non-screener'],
-    ['ETF','ETFs'],['WATCH','Watchlist']
+    ['WATCH','Watchlist']
   ];
   const anySelected = Object.keys(activeFilters).length > 0;
   const chips = defs.map(d => {
@@ -991,9 +996,9 @@ function renderTable(){
         x = DATA.watchlist.indexOf(a.sym) > -1 ? 1 : 0;
         y = DATA.watchlist.indexOf(b.sym) > -1 ? 1 : 0;
       } else if (sortKey === 'inOut') {
-        const order = { 'IN': 1, 'OUT': 2, '': 3 };
-        x = order[a.inOut || ''] || 3;
-        y = order[b.inOut || ''] || 3;
+        const order = { 'IN': 1, 'OUT': 2, 'ETF': 3, '': 4 };
+        x = order[a.inOut || ''] || 4;
+        y = order[b.inOut || ''] || 4;
       } else if (sortKey === 'scr') {
         const getVal = r => {
           if (!r.scr) return '';
@@ -1029,7 +1034,7 @@ function renderTable(){
       +'<td title="'+fmtMktCap(r.mktCap)+'">'+fmtMktCap(r.mktCap)+'</td>'
       +'<td>'+fmtPE(r.pe)+'</td>'
       +'<td>'+(r.port?'<span class="badge b-'+r.port.toLowerCase()+'">'+r.port+'</span>':'<span class="b-none">—</span>')+'</td>'
-      +'<td>'+(r.inOut==='IN'?'<span class="badge b-buy" style="font-size:9px">IN</span>':(r.inOut==='OUT'?'<span class="badge b-exit" style="font-size:9px">OUT</span>':'<span class="b-none">—</span>'))+'</td>'
+      +'<td>'+(r.inOut==='ETF'?'<span class="badge b-etf" style="font-size:9px">ETF</span>':(r.inOut==='IN'?'<span class="badge b-buy" style="font-size:9px">IN</span>':(r.inOut==='OUT'?'<span class="badge b-exit" style="font-size:9px">OUT</span>':'<span class="b-none">—</span>')))+'</td>'
       +'<td>'+renderScrBadge(r.scr)+'</td>'
       +(!hideAiCols
         ? ('<td class="l">'+badge(r.sug)+'</td>'
@@ -1501,10 +1506,11 @@ function sortMasterExcelBy(colIdx) {
 const EXCEL_FILTER_GROUPS = {
   IN: 'status',
   OUT: 'status',
+  ETF: 'status',
+  E: 'status',
   P1: 'port',
   P2: 'port',
   NONPORT: 'port',
-  E: 'e',
   C: 'c',
   Q: 'q'
 };
@@ -1845,10 +1851,10 @@ function renderCurrentSheetTable() {
     ALL: dataRows.length,
     IN: 0,
     OUT: 0,
+    ETF: 0,
     P1: 0,
     P2: 0,
     NONPORT: 0,
-    E: 0,
     C: 0,
     Q: 0
   };
@@ -1860,8 +1866,9 @@ function renderCurrentSheetTable() {
     const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isIN = bVal === 'IN' || decVal === 'IN';
-    const isOUT = bVal === 'OUT' || decVal === 'OUT';
+    const isE = isEtf(sym) || (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1 || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isE && (bVal === 'IN' || decVal === 'IN');
+    const isOUT = !isE && (bVal === 'OUT' || decVal === 'OUT');
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
@@ -1881,16 +1888,15 @@ function renderCurrentSheetTable() {
 
     const isNonPort = !isP1 && !isP2;
 
-    const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
     const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
 
     if (isIN) filterCounts.IN++;
     if (isOUT) filterCounts.OUT++;
+    if (isE) filterCounts.ETF++;
     if (isP1) filterCounts.P1++;
     if (isP2) filterCounts.P2++;
     if (isNonPort) filterCounts.NONPORT++;
-    if (isE) filterCounts.E++;
     if (isC) filterCounts.C++;
     if (isQ) filterCounts.Q++;
   });
@@ -1899,10 +1905,12 @@ function renderCurrentSheetTable() {
   if (filterCounts.IN > 0 || filterCounts.OUT > 0 || bucketCol != null || decCol != null) {
     availableFilters.push('IN', 'OUT');
   }
+  if (filterCounts.ETF > 0 || eCol != null) {
+    availableFilters.push('ETF');
+  }
   if (hasStocks) {
     availableFilters.push('P1', 'P2', 'NONPORT');
   }
-  if (hasStocks || filterCounts.E > 0 || eCol != null) availableFilters.push('E');
   if (hasStocks || filterCounts.C > 0 || cCol != null) availableFilters.push('C');
   if (hasStocks || filterCounts.Q > 0 || qltCol != null) availableFilters.push('Q');
 
@@ -1981,8 +1989,9 @@ function renderCurrentSheetTable() {
     const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isIN = bVal === 'IN' || decVal === 'IN';
-    const isOUT = bVal === 'OUT' || decVal === 'OUT';
+    const isE = isEtf(sym) || (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1 || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isE && (bVal === 'IN' || decVal === 'IN');
+    const isOUT = !isE && (bVal === 'OUT' || decVal === 'OUT');
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
@@ -2002,16 +2011,16 @@ function renderCurrentSheetTable() {
 
     const isNonPort = !isP1 && !isP2;
 
-    const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
     const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
 
     let dataAttrs = ' data-in="' + (isIN ? '1' : '0') + '"' +
                     ' data-out="' + (isOUT ? '1' : '0') + '"' +
+                    ' data-etf="' + (isE ? '1' : '0') + '"' +
+                    ' data-e="' + (isE ? '1' : '0') + '"' +
                     ' data-p1="' + (isP1 ? '1' : '0') + '"' +
                     ' data-p2="' + (isP2 ? '1' : '0') + '"' +
                     ' data-nonport="' + (isNonPort ? '1' : '0') + '"' +
-                    ' data-e="' + (isE ? '1' : '0') + '"' +
                     ' data-c="' + (isC ? '1' : '0') + '"' +
                     ' data-q="' + (isQ ? '1' : '0') + '"';
 
@@ -2058,7 +2067,8 @@ function renderCurrentSheetTable() {
         alignClass = '';
         alignStyle = 'text-align:center;';
         const u = val.toUpperCase();
-        if (u === 'P1') cellDisplay = '<span class="badge b-hold" style="font-weight:700">P1</span>';
+        if (isEtf(sym) || u === 'ETF') cellDisplay = '<span class="badge b-etf" style="font-weight:700">ETF</span>';
+        else if (u === 'P1') cellDisplay = '<span class="badge b-hold" style="font-weight:700">P1</span>';
         else if (u === 'P2') cellDisplay = '<span class="badge b-rally" style="font-weight:700">P2</span>';
         else if (u === 'IN') cellDisplay = '<span class="badge b-buy" style="font-weight:700">IN</span>';
         else if (u === 'OUT') cellDisplay = '<span class="badge b-exit" style="font-weight:700">OUT</span>';
@@ -2105,6 +2115,7 @@ function renderExcelFilterChips(availableFilters, counts) {
     let label = k;
     if (k === 'NONPORT') label = 'Non-Portfolio';
     else if (k === 'Q') label = 'Quality';
+    else if (k === 'E' || k === 'ETF') label = 'ETF';
     defs.push([k, label + ' (' + (counts[k] || 0) + ')']);
   });
 
@@ -2325,25 +2336,41 @@ function syncMasterExcelWithHoldings() {
         else if (!hadP2 && nowP2) { row[p2Col] = '✓'; addedCount++; }
       }
 
+      const isAnEtf = isEtf(sym);
+
       // Detect complete exit/sale: stock was in portfolio before, but now completely sold from both P1 and P2
       if ((hadP1 || hadP2) && !nowP1 && !nowP2) {
-        if (bucketCol != null) row[bucketCol] = 'OUT';
-        if (decCol != null) row[decCol] = 'OUT';
+        if (!isAnEtf) {
+          if (bucketCol != null) row[bucketCol] = 'OUT';
+          if (decCol != null) row[decCol] = 'OUT';
+        } else {
+          if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() !== 'ETF') row[bucketCol] = 'ETF';
+          if (decCol != null && String(row[decCol] || '').trim().toUpperCase() !== 'ETF') row[decCol] = 'ETF';
+        }
         if (reasonCol != null) {
           const oldReason = String(row[reasonCol] || '').trim();
           if (!oldReason.toLowerCase().includes('sold') && !oldReason.toLowerCase().includes('exited')) {
-            row[reasonCol] = 'Sold / Exited from portfolio. ' + (oldReason ? '(' + oldReason + ')' : '');
+            row[reasonCol] = (isAnEtf ? 'ETF exited from portfolio. ' : 'Sold / Exited from portfolio. ') + (oldReason ? '(' + oldReason + ')' : '');
           }
         }
         soldCount++;
         soldSymbols.push(sym);
       } else if (!hadP1 && !hadP2 && (nowP1 || nowP2)) {
-        // Stock newly bought into portfolio: ensure marked IN
-        if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() === 'OUT') {
-          row[bucketCol] = 'IN';
-        }
-        if (decCol != null && String(row[decCol] || '').trim().toUpperCase() === 'OUT') {
-          row[decCol] = 'IN';
+        // Newly bought into portfolio: regular stocks marked IN, ETFs marked ETF
+        if (!isAnEtf) {
+          if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() === 'OUT') {
+            row[bucketCol] = 'IN';
+          }
+          if (decCol != null && String(row[decCol] || '').trim().toUpperCase() === 'OUT') {
+            row[decCol] = 'IN';
+          }
+        } else {
+          if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() !== 'ETF') {
+            row[bucketCol] = 'ETF';
+          }
+          if (decCol != null && String(row[decCol] || '').trim().toUpperCase() !== 'ETF') {
+            row[decCol] = 'ETF';
+          }
         }
       }
     }
