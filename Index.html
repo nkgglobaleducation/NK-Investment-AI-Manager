@@ -1507,10 +1507,10 @@ const EXCEL_FILTER_GROUPS = {
   IN: 'status',
   OUT: 'status',
   ETF: 'status',
-  E: 'status',
   P1: 'port',
   P2: 'port',
   NONPORT: 'port',
+  E: 'e',
   C: 'c',
   Q: 'q'
 };
@@ -1806,7 +1806,7 @@ function renderCurrentSheetTable() {
   const portCol = colMap['LATEST PORT'] != null ? colMap['LATEST PORT'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['BUCKET']);
   const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
   const qualCol = colMap['QUALIFICATION'] != null ? colMap['QUALIFICATION'] : colMap['QUAL'];
-  const eCol = colMap['E'] != null ? colMap['E'] : colMap['ETF'];
+  const eCol = colMap['E'] != null ? colMap['E'] : (colMap['ELIGIBILITY'] != null ? colMap['ELIGIBILITY'] : (colMap['EARNINGS'] != null ? colMap['EARNINGS'] : null));
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
   const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
 
@@ -1855,6 +1855,7 @@ function renderCurrentSheetTable() {
     P1: 0,
     P2: 0,
     NONPORT: 0,
+    E: 0,
     C: 0,
     Q: 0
   };
@@ -1866,9 +1867,9 @@ function renderCurrentSheetTable() {
     const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isE = isEtf(sym) || (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1 || bVal === 'ETF' || decVal === 'ETF';
-    const isIN = !isE && (bVal === 'IN' || decVal === 'IN');
-    const isOUT = !isE && (bVal === 'OUT' || decVal === 'OUT');
+    const isAnETF = isEtf(sym) || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isAnETF && (bVal === 'IN' || decVal === 'IN');
+    const isOUT = !isAnETF && (bVal === 'OUT' || decVal === 'OUT');
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
@@ -1888,15 +1889,17 @@ function renderCurrentSheetTable() {
 
     const isNonPort = !isP1 && !isP2;
 
+    const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
     const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
 
     if (isIN) filterCounts.IN++;
     if (isOUT) filterCounts.OUT++;
-    if (isE) filterCounts.ETF++;
+    if (isAnETF) filterCounts.ETF++;
     if (isP1) filterCounts.P1++;
     if (isP2) filterCounts.P2++;
     if (isNonPort) filterCounts.NONPORT++;
+    if (isE) filterCounts.E++;
     if (isC) filterCounts.C++;
     if (isQ) filterCounts.Q++;
   });
@@ -1905,12 +1908,13 @@ function renderCurrentSheetTable() {
   if (filterCounts.IN > 0 || filterCounts.OUT > 0 || bucketCol != null || decCol != null) {
     availableFilters.push('IN', 'OUT');
   }
-  if (filterCounts.ETF > 0 || eCol != null) {
+  if (filterCounts.ETF > 0) {
     availableFilters.push('ETF');
   }
   if (hasStocks) {
     availableFilters.push('P1', 'P2', 'NONPORT');
   }
+  if (hasStocks || filterCounts.E > 0 || eCol != null) availableFilters.push('E');
   if (hasStocks || filterCounts.C > 0 || cCol != null) availableFilters.push('C');
   if (hasStocks || filterCounts.Q > 0 || qltCol != null) availableFilters.push('Q');
 
@@ -1989,9 +1993,9 @@ function renderCurrentSheetTable() {
     const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isE = isEtf(sym) || (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1 || bVal === 'ETF' || decVal === 'ETF';
-    const isIN = !isE && (bVal === 'IN' || decVal === 'IN');
-    const isOUT = !isE && (bVal === 'OUT' || decVal === 'OUT');
+    const isAnETF = isEtf(sym) || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isAnETF && (bVal === 'IN' || decVal === 'IN');
+    const isOUT = !isAnETF && (bVal === 'OUT' || decVal === 'OUT');
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
@@ -2011,12 +2015,13 @@ function renderCurrentSheetTable() {
 
     const isNonPort = !isP1 && !isP2;
 
+    const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
     const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
 
     let dataAttrs = ' data-in="' + (isIN ? '1' : '0') + '"' +
                     ' data-out="' + (isOUT ? '1' : '0') + '"' +
-                    ' data-etf="' + (isE ? '1' : '0') + '"' +
+                    ' data-etf="' + (isAnETF ? '1' : '0') + '"' +
                     ' data-e="' + (isE ? '1' : '0') + '"' +
                     ' data-p1="' + (isP1 ? '1' : '0') + '"' +
                     ' data-p2="' + (isP2 ? '1' : '0') + '"' +
@@ -2115,7 +2120,8 @@ function renderExcelFilterChips(availableFilters, counts) {
     let label = k;
     if (k === 'NONPORT') label = 'Non-Portfolio';
     else if (k === 'Q') label = 'Quality';
-    else if (k === 'E' || k === 'ETF') label = 'ETF';
+    else if (k === 'ETF') label = 'ETF';
+    else if (k === 'E') label = 'E';
     defs.push([k, label + ' (' + (counts[k] || 0) + ')']);
   });
 
