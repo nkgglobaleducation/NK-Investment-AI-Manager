@@ -610,15 +610,57 @@ function isEtf(sym){
   return /BEES$|ETF$/.test(s) || /^MON\d+/.test(s) || /^MONQ\d+/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1;
 }
 
+function normalizeSymbol(s) {
+  if (!s) return '';
+  return String(s).trim().toUpperCase();
+}
+
+function getSymbolKeys(s) {
+  const sym = normalizeSymbol(s);
+  if (!sym) return [];
+  const clean = sym.replace(/[^A-Z0-9]/g, '');
+  const hyphen = sym.replace(/_/g, '-');
+  const under = sym.replace(/-/g, '_');
+  const space = sym.replace(/[-_]/g, ' ');
+  const set = new Set([sym]);
+  if (clean) set.add(clean);
+  if (hyphen) set.add(hyphen);
+  if (under) set.add(under);
+  if (space) set.add(space);
+  return Array.from(set);
+}
+
+function parseCandidateStatus(rawVal) {
+  if (!rawVal) return '';
+  const s = String(rawVal).trim().toUpperCase();
+  if (s === 'IN' || s === 'OUT' || s === 'ETF') return s;
+  if (/^(STRONG\s+IN|KEEP\s+IN|HIGH[- ]RISK\s+IN|BUY\s+IN|BUY\b|IN\b)/.test(s) || s.startsWith('IN ') || s.startsWith('IN —') || s.startsWith('IN -')) return 'IN';
+  if (/^(OUT\b|EXIT\b|SELL\b|DROPOUT\b|REPLACED\b|REPLACE\b)/.test(s) || s.startsWith('OUT ') || s.startsWith('OUT —') || s.startsWith('OUT -')) return 'OUT';
+  if (s.includes('ETF')) return 'ETF';
+  return '';
+}
+
 function getMasterSheetInOutMap() {
   const map = {};
   const me = DATA && DATA.masterExcel;
   if (!me || !me.sheets) return map;
 
   const sheetNames = me.sheetNames || Object.keys(me.sheets);
-  sheetNames.forEach(sName => {
+
+  // Sort sheets so primary master candidate sheets are processed first
+  const sortedSheets = sheetNames.slice().sort((a, b) => {
+    const aRows = (me.sheets[a] || []).length;
+    const bRows = (me.sheets[b] || []).length;
+    const aUpper = a.toUpperCase();
+    const bUpper = b.toUpperCase();
+    const aScore = (aUpper.includes('MASTER') || aUpper.includes('IN_OUT') || aUpper === 'IN' || aUpper === 'OUT' ? 100 : 0) + aRows;
+    const bScore = (bUpper.includes('MASTER') || bUpper.includes('IN_OUT') || bUpper === 'IN' || bUpper === 'OUT' ? 100 : 0) + bRows;
+    return bScore - aScore;
+  });
+
+  sortedSheets.forEach(sName => {
     const rows = me.sheets[sName] || [];
-    if (!rows || !rows.length) return;
+    if (!rows || rows.length < 2) return;
 
     let headerRowIdx = -1;
     for (let r = 0; r < Math.min(rows.length, 10); r++) {
@@ -639,9 +681,9 @@ function getMasterSheetInOutMap() {
     const stockFallbackCol = findExcelStockFallbackCol(colMap);
     if (stockCol == null && stockFallbackCol == null) return;
 
-    const statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION'], true);
-    const bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO'], false);
-    const decCol = findExcelCol(colMap, ['DECISION', 'ACTION'], false);
+    const statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
+    const bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO', 'PORT'], false);
+    const decCol = findExcelCol(colMap, ['DECISION', 'ACTION', 'STATUS', 'REMARK', 'RECOMMENDATION'], false);
 
     const sheetUpper = String(sName).trim().toUpperCase();
     const isSheetIN = sheetUpper === 'IN' || sheetUpper.startsWith('IN ');
@@ -653,35 +695,26 @@ function getMasterSheetInOutMap() {
       const sym = getRowStockSymbol(row, stockCol, stockFallbackCol);
       if (!sym) continue;
 
-      if (isEtf(sym)) {
-        map[sym] = 'ETF';
-        continue;
-      }
-
       let val = '';
-      if (statusCol != null) {
-        const s = String(row[statusCol] || '').trim().toUpperCase();
-        if (s === 'IN' || s === 'OUT' || s === 'ETF') val = s;
-        else if (s.startsWith('IN')) val = 'IN';
-        else if (s.startsWith('OUT')) val = 'OUT';
-      }
-      if (!val && bucketCol != null) {
-        const b = String(row[bucketCol] || '').trim().toUpperCase();
-        if (b === 'IN' || b === 'OUT' || b === 'ETF') val = b;
-      }
-      if (!val && decCol != null) {
-        const d = String(row[decCol] || '').trim().toUpperCase();
-        if (d === 'IN' || d === 'OUT' || d === 'ETF') val = d;
-        else if (d.startsWith('IN') || d.includes('STRONG IN') || d.includes('KEEP IN') || d.includes('HIGH-RISK IN')) val = 'IN';
-        else if (d.startsWith('OUT')) val = 'OUT';
-      }
-      if (!val) {
-        if (isSheetIN) val = 'IN';
-        else if (isSheetOUT) val = 'OUT';
+      if (isEtf(sym)) {
+        val = 'ETF';
+      } else {
+        if (statusCol != null) val = parseCandidateStatus(row[statusCol]);
+        if (!val && bucketCol != null) val = parseCandidateStatus(row[bucketCol]);
+        if (!val && decCol != null) val = parseCandidateStatus(row[decCol]);
+        if (!val) {
+          if (isSheetIN) val = 'IN';
+          else if (isSheetOUT) val = 'OUT';
+        }
       }
 
       if (val) {
-        map[sym] = val;
+        // Multi-key registration: stores under original, uppercase, clean alphanumeric, and hyphen/underscore variants
+        getSymbolKeys(sym).forEach(k => {
+          if (!map[k] || map[k] === val) {
+            map[k] = val;
+          }
+        });
       }
     }
   });
@@ -733,8 +766,16 @@ function makeRow(h, port, inOutMap){
   // Screener 12-month status & screener membership
   const etf = isEtf(h.sym);
 
-  // Master Sheet Candidate determination: ETFs are treated as ETF candidates, not IN/OUT
-  const inOut = etf ? 'ETF' : ((inOutMap && inOutMap[h.sym]) || '');
+  // Master Sheet Candidate determination: checks normalized symbol keys
+  let inOut = '';
+  if (etf) {
+    inOut = 'ETF';
+  } else if (inOutMap) {
+    const keys = getSymbolKeys(h.sym);
+    for (let k of keys) {
+      if (inOutMap[k]) { inOut = inOutMap[k]; break; }
+    }
+  }
   const scrs = DATA.screeners || {};
   const inCmp = (scrs.compounder && scrs.compounder.indexOf(h.sym) > -1) || false;
   const inQlt = (scrs.quality && scrs.quality.indexOf(h.sym) > -1) || false;
@@ -1314,6 +1355,7 @@ function showTab(t){
   document.getElementById('tab-dropouts').classList.toggle('hidden', t!=='dropouts');
   document.getElementById('tab-excel').classList.toggle('hidden', t!=='excel');
   document.getElementById('tab-settings').classList.toggle('hidden', t!=='settings');
+  if (t === 'dash') rebuild();
   if (t === 'dropouts') renderDropouts();
   if (t === 'excel') renderMasterExcel();
 }
@@ -1554,15 +1596,41 @@ function findExcelCol(map, keys, allowPrefix) {
 
 function findExcelStockCol(map) {
   const priorities = [
-    'MASTER/SCREENER CODE', 'MASTER / SCREENER CODE', 'SCREENER CODE',
+    'MASTER/SCREENER CODE', 'MASTER / SCREENER CODE', 'SCREENER CODE', 'MASTER CODE',
     'STOCK', 'SYMBOL', 'P1 PORTFOLIO CODE', 'PORTFOLIO CODE',
-    'CODE', 'TICKER', 'INSTRUMENT', 'ETF'
+    'CODE', 'TICKER', 'INSTRUMENT', 'ETF', 'NSE CODE', 'BSE CODE',
+    'SCRIP', 'SECURITY', 'COMPANY TICKER'
   ];
-  return findExcelCol(map, priorities, false) || findExcelCol(map, ['STOCK', 'SYMBOL', 'CODE', 'TICKER'], true);
+  return findExcelCol(map, priorities, false) || findExcelCol(map, ['STOCK', 'SYMBOL', 'CODE', 'TICKER', 'INSTRUMENT', 'SCRIP'], true);
 }
 
 function findExcelStockFallbackCol(map) {
-  return findExcelCol(map, ['P1 PORTFOLIO CODE', 'PORTFOLIO CODE', 'CODE', 'SYMBOL'], false);
+  return findExcelCol(map, ['P1 PORTFOLIO CODE', 'PORTFOLIO CODE', 'CODE', 'SYMBOL', 'TICKER'], false);
+}
+
+function findExcelHoldingCol(map, portKey) {
+  if (!map) return null;
+  const p = String(portKey || 'P1').toUpperCase();
+  const explicit = [
+    'CURRENT ' + p + ' VALUE (₹)',
+    'CURRENT ' + p + ' VALUE',
+    'CURRENT ' + p,
+    'CURR ' + p,
+    p + ' HOLDING',
+    p + ' VALUE',
+    p
+  ];
+  for (let k of explicit) {
+    if (map[k] != null) return map[k];
+  }
+  for (let h in map) {
+    if (h.startsWith('CURRENT ' + p) || h.startsWith('CURR ' + p) || h === p) {
+      if (!h.includes('CODE') && !h.includes('SYMBOL') && !h.includes('TICKER')) {
+        return map[h];
+      }
+    }
+  }
+  return null;
 }
 
 function getRowStockSymbol(row, stockCol, fallbackCol) {
@@ -1849,12 +1917,12 @@ function renderCurrentSheetTable() {
 
   const stockCol = findExcelStockCol(colMap);
   const stockFallbackCol = findExcelStockFallbackCol(colMap);
-  const statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION'], true);
-  const bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO'], false);
+  const statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
+  const bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO', 'PORT'], false);
   const portCol = findExcelCol(colMap, ['LATEST PORT', 'PORT', 'BUCKET'], false);
-  const decCol = findExcelCol(colMap, ['DECISION', 'ACTION'], false);
-  const p1Col = findExcelCol(colMap, ['P1', 'CURRENT P1', 'CURR P1', 'CURRENT_P1', 'PORT 1', 'PORTFOLIO 1', 'P1 PORTFOLIO CODE'], true);
-  const p2Col = findExcelCol(colMap, ['P2', 'CURRENT P2', 'CURR P2', 'CURRENT_P2', 'PORT 2', 'PORTFOLIO 2'], true);
+  const decCol = findExcelCol(colMap, ['DECISION', 'ACTION', 'STATUS', 'REMARK', 'RECOMMENDATION'], false);
+  const p1Col = findExcelHoldingCol(colMap, 'P1') || findExcelCol(colMap, ['P1', 'CURRENT P1', 'CURR P1', 'P1 PORTFOLIO CODE'], true);
+  const p2Col = findExcelHoldingCol(colMap, 'P2') || findExcelCol(colMap, ['P2', 'CURRENT P2', 'CURR P2'], true);
   const eCol = colMap['E'] != null ? colMap['E'] : findExcelCol(colMap, ['ELIGIBILITY', 'EARNINGS'], false);
   const cCol = colMap['C'] != null ? colMap['C'] : findExcelCol(colMap, ['CMP', 'COMPOUNDER'], false);
   const qltCol = colMap['Q'] != null ? colMap['Q'] : findExcelCol(colMap, ['QUALITY', 'QLT', 'QUALITY SCREENER'], false);
@@ -1899,16 +1967,10 @@ function renderCurrentSheetTable() {
     const sym = getRowStockSymbol(row, stockCol, stockFallbackCol);
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isAnETF = isEtf(sym) || stVal === 'ETF' || bVal === 'ETF' || decVal === 'ETF';
-    const isIN = !isAnETF && (
-      stVal === 'IN' || bVal === 'IN' || decVal === 'IN' ||
-      stVal.startsWith('IN') || decVal.startsWith('IN') ||
-      decVal.includes('STRONG IN') || decVal.includes('KEEP IN') || decVal.includes('HIGH-RISK IN')
-    );
-    const isOUT = !isAnETF && (
-      stVal === 'OUT' || bVal === 'OUT' || decVal === 'OUT' ||
-      stVal.startsWith('OUT') || decVal.startsWith('OUT')
-    );
+    const candStatus = parseCandidateStatus(stVal) || parseCandidateStatus(bVal) || parseCandidateStatus(decVal);
+    const isAnETF = isEtf(sym) || candStatus === 'ETF' || stVal === 'ETF' || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isAnETF && candStatus === 'IN';
+    const isOUT = !isAnETF && candStatus === 'OUT';
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
@@ -2033,16 +2095,10 @@ function renderCurrentSheetTable() {
     const sym = getRowStockSymbol(row, stockCol, stockFallbackCol);
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isAnETF = isEtf(sym) || stVal === 'ETF' || bVal === 'ETF' || decVal === 'ETF';
-    const isIN = !isAnETF && (
-      stVal === 'IN' || bVal === 'IN' || decVal === 'IN' ||
-      stVal.startsWith('IN') || decVal.startsWith('IN') ||
-      decVal.includes('STRONG IN') || decVal.includes('KEEP IN') || decVal.includes('HIGH-RISK IN')
-    );
-    const isOUT = !isAnETF && (
-      stVal === 'OUT' || bVal === 'OUT' || decVal === 'OUT' ||
-      stVal.startsWith('OUT') || decVal.startsWith('OUT')
-    );
+    const candStatus = parseCandidateStatus(stVal) || parseCandidateStatus(bVal) || parseCandidateStatus(decVal);
+    const isAnETF = isEtf(sym) || candStatus === 'ETF' || stVal === 'ETF' || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isAnETF && candStatus === 'IN';
+    const isOUT = !isAnETF && candStatus === 'OUT';
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
@@ -2299,12 +2355,12 @@ function syncMasterExcelWithHoldings() {
 
     let stockCol = findExcelStockCol(colMap);
     let stockFallbackCol = findExcelStockFallbackCol(colMap);
-    let statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION'], true);
-    let bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO'], false);
-    let decCol = findExcelCol(colMap, ['DECISION', 'ACTION'], false);
+    let statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
+    let bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO', 'PORT'], false);
+    let decCol = findExcelCol(colMap, ['DECISION', 'ACTION', 'STATUS', 'REMARK', 'RECOMMENDATION'], false);
     let reasonCol = findExcelCol(colMap, ['ORIGINAL MASTER REASON', 'REASON', 'DESCRIPTION', 'NOTES'], true);
-    let p1Col = findExcelCol(colMap, ['P1', 'CURRENT P1', 'CURR P1', 'CURRENT_P1', 'PORT 1', 'PORTFOLIO 1', 'P1 PORTFOLIO CODE'], true);
-    let p2Col = findExcelCol(colMap, ['P2', 'CURRENT P2', 'CURR P2', 'CURRENT_P2', 'PORT 2', 'PORTFOLIO 2'], true);
+    let p1Col = findExcelHoldingCol(colMap, 'P1');
+    let p2Col = findExcelHoldingCol(colMap, 'P2');
 
     if (stockCol == null && stockFallbackCol == null) {
       if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Sync with Holdings'; }
@@ -2338,12 +2394,12 @@ function syncMasterExcelWithHoldings() {
       });
       stockCol = findExcelStockCol(colMap);
       stockFallbackCol = findExcelStockFallbackCol(colMap);
-      statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION'], true);
-      bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO'], false);
-      decCol = findExcelCol(colMap, ['DECISION', 'ACTION'], false);
+      statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
+      bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO', 'PORT'], false);
+      decCol = findExcelCol(colMap, ['DECISION', 'ACTION', 'STATUS', 'REMARK', 'RECOMMENDATION'], false);
       reasonCol = findExcelCol(colMap, ['ORIGINAL MASTER REASON', 'REASON', 'DESCRIPTION', 'NOTES'], true);
-      p1Col = findExcelCol(colMap, ['P1', 'CURRENT P1', 'CURR P1', 'CURRENT_P1', 'PORT 1', 'PORTFOLIO 1', 'P1 PORTFOLIO CODE'], true);
-      p2Col = findExcelCol(colMap, ['P2', 'CURRENT P2', 'CURR P2', 'CURRENT_P2', 'PORT 2', 'PORTFOLIO 2'], true);
+      p1Col = findExcelHoldingCol(colMap, 'P1');
+      p2Col = findExcelHoldingCol(colMap, 'P2');
     }
 
     // 3. Build live holdings sets from DATA.p1 and DATA.p2
