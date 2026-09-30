@@ -2136,8 +2136,9 @@ function renderCurrentSheetTable() {
     const row = dataRows[r] || [];
 
     const nonBlankCells = row.filter(c => String(c != null ? c : '').trim() !== '');
-    if (nonBlankCells.length > 0 && (nonBlankCells[0] === 'Combined Sector Allocation' || nonBlankCells[0].indexOf('Sector Allocation') > -1)) {
-      trHtml += '<tr style="background:#f1f5f9;border-top:2px solid #cbd5e1;font-weight:700;color:var(--navy)"><td colspan="' + renderedColumns.length + '" style="padding:8px 10px;font-size:12px">📊 ' + escapeHtml(nonBlankCells[0]) + '</td></tr>';
+    const firstCellText = nonBlankCells.length > 0 ? String(nonBlankCells[0] != null ? nonBlankCells[0] : '').trim() : '';
+    if (firstCellText && (firstCellText === 'Combined Sector Allocation' || firstCellText.indexOf('Sector Allocation') > -1)) {
+      trHtml += '<tr style="background:#f1f5f9;border-top:2px solid #cbd5e1;font-weight:700;color:var(--navy)"><td colspan="' + renderedColumns.length + '" style="padding:8px 10px;font-size:12px">📊 ' + escapeHtml(firstCellText) + '</td></tr>';
       continue;
     }
 
