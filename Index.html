@@ -678,7 +678,7 @@ function getMasterSheetInOutMap() {
     });
 
     const stockCol = findExcelStockCol(colMap);
-    const stockFallbackCol = findExcelStockFallbackCol(colMap);
+    const stockFallbackCol = findExcelStockFallbackCol(colMap, stockCol);
     if (stockCol == null && stockFallbackCol == null) return;
 
     const statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
@@ -1594,18 +1594,58 @@ function findExcelCol(map, keys, allowPrefix) {
   return null;
 }
 
-function findExcelStockCol(map) {
-  const priorities = [
-    'MASTER/SCREENER CODE', 'MASTER / SCREENER CODE', 'SCREENER CODE', 'MASTER CODE',
-    'STOCK', 'SYMBOL', 'P1 PORTFOLIO CODE', 'PORTFOLIO CODE',
-    'CODE', 'TICKER', 'INSTRUMENT', 'ETF', 'NSE CODE', 'BSE CODE',
-    'SCRIP', 'SECURITY', 'COMPANY TICKER'
+function isStockHeaderExcluded(h) {
+  if (!h) return true;
+  const upper = h.toUpperCase();
+  const badWords = [
+    'NOTE', 'REASON', 'DESC', 'MISMATCH', 'MAPPING', 'COMMENT', 'REMARK',
+    'EXPLANATION', 'FAILURE', 'EXCEPTION', 'ANALYSIS', 'STATUS', 'DECISION',
+    'SECTOR', 'NAME', 'VALUE', 'PRICE', 'ALLOCATION', 'WEIGHT', 'CAP', 'PE'
   ];
-  return findExcelCol(map, priorities, false) || findExcelCol(map, ['STOCK', 'SYMBOL', 'CODE', 'TICKER', 'INSTRUMENT', 'SCRIP'], true);
+  return badWords.some(w => upper.includes(w));
 }
 
-function findExcelStockFallbackCol(map) {
-  return findExcelCol(map, ['P1 PORTFOLIO CODE', 'PORTFOLIO CODE', 'CODE', 'SYMBOL', 'TICKER'], false);
+function scoreStockHeader(h) {
+  if (isStockHeaderExcluded(h)) return -100;
+  const upper = h.toUpperCase();
+  if (upper.includes('MASTER') && upper.includes('CODE')) return 100;
+  if (upper.includes('SCREENER') && upper.includes('CODE')) return 95;
+  if (upper.includes('P1') && upper.includes('CODE')) return 90;
+  if (upper.includes('PORTFOLIO') && upper.includes('CODE')) return 85;
+  if (upper === 'STOCK' || upper === 'SYMBOL' || upper === 'TICKER') return 80;
+  if (upper.startsWith('STOCK') || upper.startsWith('SYMBOL') || upper.startsWith('TICKER')) return 75;
+  if (upper.includes('NSE') && upper.includes('CODE')) return 70;
+  if (upper.includes('BSE') && upper.includes('CODE')) return 70;
+  if (upper.includes('CODE') || upper.includes('TICKER') || upper.includes('SYMBOL')) return 60;
+  if (upper === 'INSTRUMENT') return 50;
+  return 0;
+}
+
+function findExcelStockCol(map) {
+  let bestIdx = null;
+  let bestScore = 0;
+  for (let h in map) {
+    const score = scoreStockHeader(h);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = map[h];
+    }
+  }
+  return bestIdx;
+}
+
+function findExcelStockFallbackCol(map, excludeCol) {
+  let bestIdx = null;
+  let bestScore = 0;
+  for (let h in map) {
+    if (excludeCol != null && map[h] === excludeCol) continue;
+    const score = scoreStockHeader(h);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = map[h];
+    }
+  }
+  return bestIdx;
 }
 
 function findExcelHoldingCol(map, portKey) {
@@ -1633,10 +1673,23 @@ function findExcelHoldingCol(map, portKey) {
   return null;
 }
 
+function isValidStockSymbol(s) {
+  if (!s) return false;
+  const sym = String(s).trim();
+  if (sym.length < 1 || sym.length > 25) return false;
+  if (sym.indexOf(' ') > -1 && sym.length > 15) return false;
+  if (/^(NO|YES|TRUE|FALSE|NULL|NONE|N\/A|NA|—|-)$/i.test(sym)) return false;
+  return true;
+}
+
 function getRowStockSymbol(row, stockCol, fallbackCol) {
   if (!row) return '';
   let sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
-  if (!sym && fallbackCol != null) sym = String(row[fallbackCol] || '').trim().toUpperCase();
+  if (!isValidStockSymbol(sym)) sym = '';
+  if (!sym && fallbackCol != null) {
+    const fSym = String(row[fallbackCol] || '').trim().toUpperCase();
+    if (isValidStockSymbol(fSym)) sym = fSym;
+  }
   return sym;
 }
 
@@ -1916,7 +1969,7 @@ function renderCurrentSheetTable() {
   });
 
   const stockCol = findExcelStockCol(colMap);
-  const stockFallbackCol = findExcelStockFallbackCol(colMap);
+  const stockFallbackCol = findExcelStockFallbackCol(colMap, stockCol);
   const statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
   const bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO', 'PORT'], false);
   const portCol = findExcelCol(colMap, ['LATEST PORT', 'PORT', 'BUCKET'], false);
@@ -2354,7 +2407,7 @@ function syncMasterExcelWithHoldings() {
     });
 
     let stockCol = findExcelStockCol(colMap);
-    let stockFallbackCol = findExcelStockFallbackCol(colMap);
+    let stockFallbackCol = findExcelStockFallbackCol(colMap, stockCol);
     let statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
     let bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO', 'PORT'], false);
     let decCol = findExcelCol(colMap, ['DECISION', 'ACTION', 'STATUS', 'REMARK', 'RECOMMENDATION'], false);
@@ -2393,7 +2446,7 @@ function syncMasterExcelWithHoldings() {
         if (n) colMap[n] = i;
       });
       stockCol = findExcelStockCol(colMap);
-      stockFallbackCol = findExcelStockFallbackCol(colMap);
+      stockFallbackCol = findExcelStockFallbackCol(colMap, stockCol);
       statusCol = findExcelCol(colMap, ['STATUS', 'CANDIDATE', 'CANDIDATE STATUS', 'ACTION', 'MASTER STATUS', 'IN/OUT', 'IN / OUT'], true);
       bucketCol = findExcelCol(colMap, ['BUCKET', 'LATEST PORT', 'PORTFOLIO', 'PORT'], false);
       decCol = findExcelCol(colMap, ['DECISION', 'ACTION', 'STATUS', 'REMARK', 'RECOMMENDATION'], false);
@@ -2557,7 +2610,7 @@ function exportCurrentExcelSheet(format) {
 
   const hasQ = colMap['Q'] != null || colMap['QUALITY'] != null || colMap['QLT'] != null;
   const stockCol = findExcelStockCol(colMap);
-  const stockFallbackCol = findExcelStockFallbackCol(colMap);
+  const stockFallbackCol = findExcelStockFallbackCol(colMap, stockCol);
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
   const qltList = (DATA && DATA.screeners && Array.isArray(DATA.screeners.quality))
     ? DATA.screeners.quality.map(s => String(s || '').trim().toUpperCase())
