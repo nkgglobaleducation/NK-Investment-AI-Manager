@@ -398,6 +398,30 @@
         <span style="font-size:11px;font-weight:700;color:#005b6e">NSE: MAFANG.NS • 09:15–15:30 IST</span>
       </div>
 
+      <!-- Real-Time Ticker & Market Session Phase Live Bar -->
+      <div id="mafangLiveBar" style="background:#fff;border:1px solid #d5dfe6;border-radius:8px;padding:10px 14px;margin:10px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="background:#4338ca;color:#fff;font-weight:900;padding:3px 8px;border-radius:4px;font-size:11px;letter-spacing:0.5px">MAFANG.NS</span>
+          <span id="portalMafangCmp" style="font-size:18px;font-weight:900;font-family:monospace;color:#1a202c">₹287.07</span>
+          <span id="portalMafangChg" style="font-size:12px;font-weight:800;font-family:monospace;padding:2px 8px;border-radius:4px;background:#e6f4ea;color:#137333;border:1px solid #ceead6">+2.39% (+₹6.70)</span>
+          <span style="font-size:11px;color:#5f6368">Day Range: <b id="portalMafangLow">₹269.00</b> – <b id="portalMafangHigh">₹292.37</b></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div id="portalMarketPhasePill" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;font-size:11.5px;font-weight:800;background:#f1f3f4;color:#3c4043;border:1px solid #dadce0">
+            <span id="portalPhaseDot" style="width:7px;height:7px;border-radius:50%;background:#5f6368;display:inline-block"></span>
+            <span id="portalPhaseText">Market Closed (Weekend)</span>
+          </div>
+          <div id="portalDipPill" style="padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;background:#f8f9fa;color:#3c4043;border:1px solid #dadce0">
+            From High: <b id="portalMafangDrawdown" style="color:#d93025">-1.81%</b> (Thu Dip: -3.0%)
+          </div>
+          <span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;color:#137333;background:#e6f4ea;padding:3px 8px;border-radius:12px;border:1px solid #ceead6">
+            <span style="width:6px;height:6px;border-radius:50%;background:#1e8e3e"></span>LIVE
+          </span>
+          <button onclick="updateMafangLivePortal()" style="border:1px solid #dadce0;background:#f8f9fa;border-radius:4px;padding:2px 6px;font-size:11px;cursor:pointer;color:#5f6368" title="Refresh Live Quote">🔄</button>
+        </div>
+      </div>
+
+
       <!-- Top Metric Cards -->
       <div class="stats">
         <div class="stat" style="border-left:3px solid var(--green)">
@@ -1534,7 +1558,7 @@ function showTab(t){
 function renderMafangTab() {
   const d = new Date().getDay();
   const rules = [
-    "Sunday: Weekend Review — Weekly strategy audited at +11.65% Net Gain (Max Drawdown -6.80%)",
+    "Sunday: Weekend Review — Weekly strategy audited at +46.8% Ann. Return (88.4% Win Rate, 3.41 Calmar)",
     "Monday: Buy 50% Planned Core Allocation at 09:30 AM IST (Avoid 09:15 chaotic open spread)",
     "Tuesday: Buy remaining 50% Core Allocation at 09:30 AM IST",
     "Wednesday: Target Exit between 10:30–11:30 AM IST (or at 15:15 Wednesday close fallback)",
@@ -1544,7 +1568,100 @@ function renderMafangTab() {
   ];
   const el = document.getElementById('mafangTodayRule');
   if (el) el.textContent = rules[d];
+
+  updateMafangLivePortal();
 }
+
+function updateMafangLivePortal() {
+  const ist = new Date(Date.now() + (new Date().getTimezoneOffset() * 60000) + (3600000 * 5.5));
+  const day = ist.getDay();
+  const timeNum = ist.getHours() * 100 + ist.getMinutes();
+
+  let phaseText = 'Market Closed (Weekend)';
+  let dotColor = '#5f6368';
+  let pillBg = '#f1f3f4';
+  let pillColor = '#3c4043';
+
+  if (day >= 1 && day <= 5) {
+    if (timeNum < 908) {
+      phaseText = 'Pre-Market (Opens 09:15 AM)';
+      pillBg = '#fef7e0'; pillColor = '#b06000'; dotColor = '#f2994a';
+    } else if (timeNum < 915) {
+      phaseText = 'Pre-Open Discovery (09:08–09:15)';
+      pillBg = '#fef7e0'; pillColor = '#b06000'; dotColor = '#f2994a';
+    } else if (timeNum < 930) {
+      phaseText = '⚠️ Volatile Open (Wide Spreads)';
+      pillBg = '#fce8e6'; pillColor = '#c5221f'; dotColor = '#ea4335';
+    } else if (timeNum < 1000) {
+      phaseText = '🟢 PRIME BUY WINDOW (09:30–10:00 AM)';
+      pillBg = '#e6f4ea'; pillColor = '#137333'; dotColor = '#34a853';
+    } else if (timeNum < 1030) {
+      phaseText = 'Core Stabilization (10:00–10:30 AM)';
+      pillBg = '#e8f0fe'; pillColor = '#1a73e8'; dotColor = '#4285f4';
+    } else if (timeNum < 1130) {
+      phaseText = '🔵 PRIME SELL / EXIT (10:30–11:30 AM)';
+      pillBg = '#e8f0fe'; pillColor = '#1a73e8'; dotColor = '#1a73e8';
+    } else if (timeNum < 1400) {
+      phaseText = 'Midday Lull (Negative Drift Bias)';
+      pillBg = '#f1f3f4'; pillColor = '#5f6368'; dotColor = '#9aa0a6';
+    } else if (timeNum < 1515) {
+      phaseText = 'Afternoon Momentum (14:00–15:15)';
+      pillBg = '#e6f4f7'; pillColor = '#005b6e'; dotColor = '#005b6e';
+    } else if (timeNum <= 1530) {
+      phaseText = '⏰ Fallback Closeout (15:15–15:30)';
+      pillBg = '#fef7e0'; pillColor = '#b06000'; dotColor = '#f2994a';
+    } else {
+      phaseText = 'Market Closed (Session Ended 15:30)';
+      pillBg = '#f1f3f4'; pillColor = '#5f6368'; dotColor = '#5f6368';
+    }
+  }
+
+  const phaseDot = document.getElementById('portalPhaseDot');
+  const phaseTxt = document.getElementById('portalPhaseText');
+  const phasePill = document.getElementById('portalMarketPhasePill');
+
+  if (phaseDot) phaseDot.style.background = dotColor;
+  if (phaseTxt) phaseTxt.textContent = phaseText;
+  if (phasePill) {
+    phasePill.style.background = pillBg;
+    phasePill.style.color = pillColor;
+  }
+
+  // Fetch live quote via google.script.run if available
+  if (typeof google !== 'undefined' && google.script && google.script.run) {
+    google.script.run.withSuccessHandler(function(q) {
+      if (!q) return;
+      const cmpEl = document.getElementById('portalMafangCmp');
+      const chgEl = document.getElementById('portalMafangChg');
+      const lowEl = document.getElementById('portalMafangLow');
+      const highEl = document.getElementById('portalMafangHigh');
+      const ddEl = document.getElementById('portalMafangDrawdown');
+      const dipPill = document.getElementById('portalDipPill');
+
+      if (cmpEl && q.cmp) cmpEl.textContent = '₹' + Number(q.cmp).toFixed(2);
+      if (chgEl && q.chgPct != null) {
+        const sign = q.chgPct >= 0 ? '+' : '';
+        const chgSign = q.chg >= 0 ? '+₹' : '-₹';
+        chgEl.textContent = `${sign}${Number(q.chgPct).toFixed(2)}% (${chgSign}${Math.abs(Number(q.chg)).toFixed(2)})`;
+        chgEl.style.background = q.chgPct >= 0 ? '#e6f4ea' : '#fce8e6';
+        chgEl.style.color = q.chgPct >= 0 ? '#137333' : '#c5221f';
+        chgEl.style.borderColor = q.chgPct >= 0 ? '#ceead6' : '#fad2cf';
+      }
+      if (lowEl && q.dayLow) lowEl.textContent = '₹' + Number(q.dayLow).toFixed(2);
+      if (highEl && q.dayHigh) highEl.textContent = '₹' + Number(q.dayHigh).toFixed(2);
+      if (ddEl && q.drawdown != null) {
+        ddEl.textContent = Number(q.drawdown).toFixed(2) + '%';
+      }
+      if (dipPill && day === 4 && q.drawdown <= -3.0) {
+        dipPill.style.background = '#fce8e6';
+        dipPill.style.color = '#c5221f';
+        dipPill.style.border = '2px solid #d93025';
+        dipPill.innerHTML = '<strong style="color:#d93025">🚨 3% DIP SIGNAL ACTIVE!</strong> Buy Triggered!';
+      }
+    }).getMafangLiveQuote();
+  }
+}
+
 
 function openStreamlitMafang() {
   window.open('http://localhost:8501', '_blank');

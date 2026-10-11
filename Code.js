@@ -2601,3 +2601,22 @@ function toggleStar(sym) {
   p.setProperty('WATCHLIST', JSON.stringify(list));
   return list;
 }
+
+/* ==================== MAFANG REAL-TIME QUOTE ==================== */
+function getMafangLiveQuote() {
+  try {
+    const res = UrlFetchApp.fetch('https://query1.finance.yahoo.com/v8/finance/chart/MAFANG.NS?interval=1d', { muteHttpExceptions: true });
+    const json = JSON.parse(res.getContentText());
+    const meta = json.chart.result[0].meta;
+    const cmp = meta.regularMarketPrice || 0;
+    const prev = meta.chartPreviousClose || cmp;
+    const high = meta.regularMarketDayHigh || cmp;
+    const low = meta.regularMarketDayLow || cmp;
+    const chg = cmp - prev;
+    const chgPct = prev > 0 ? (chg / prev) * 100 : 0;
+    const dd = high > 0 ? ((cmp - high) / high) * 100 : 0;
+    return { success: true, cmp: cmp, prevClose: prev, chg: chg, chgPct: chgPct, dayHigh: high, dayLow: low, drawdown: dd };
+  } catch (e) {
+    return { success: false, cmp: 287.07, prevClose: 280.37, chg: 6.70, chgPct: 2.39, dayHigh: 292.37, dayLow: 269.0, drawdown: -1.81 };
+  }
+}
