@@ -188,6 +188,7 @@
       <div class="tab active" data-tab="dash" onclick="showTab('dash')">📊 Dashboard</div>
       <div class="tab" data-tab="dropouts" onclick="showTab('dropouts')">📉 Drop-outs (<span id="tabDropoutCount">0</span>)</div>
       <div class="tab" data-tab="excel" onclick="showTab('excel')">📑 Master Sheet</div>
+      <div class="tab" data-tab="mafang" onclick="showTab('mafang')">🎯 MAFANG Timing</div>
       <div class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</div>
     </div>
 
@@ -383,6 +384,226 @@
           <thead id="excelThead"></thead>
           <tbody id="excelTbody"></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ---------- MAFANG QUANTITATIVE TIMING DESK ---------- -->
+    <div id="tab-mafang" class="hidden">
+      <!-- Strategy Weekday Rule Alert Banner -->
+      <div id="mafangBanner" style="background:#e6f4f7;border:1px solid #005b6e;color:#004351;padding:10px 14px;border-radius:8px;margin:12px 0 6px;font-size:12px;display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <span style="background:#005b6e;color:#fff;font-weight:800;padding:2px 8px;border-radius:4px;font-size:10.5px;letter-spacing:0.5px;margin-right:8px">TODAY'S ACTION</span>
+          <b id="mafangTodayRule">Monday/Tuesday Core Accumulation: Buy at 09:30 AM IST</b>
+        </div>
+        <span style="font-size:11px;font-weight:700;color:#005b6e">NSE: MAFANG.NS • 09:15–15:30 IST</span>
+      </div>
+
+      <!-- Top Metric Cards -->
+      <div class="stats">
+        <div class="stat" style="border-left:3px solid var(--green)">
+          <div class="lbl">BEST BUYING WINDOW</div>
+          <div class="val" style="color:var(--green);font-size:18px">09:30–10:00 AM</div>
+          <div class="sub">Spreads contract • Positive forward drift (+0.14%)</div>
+          <div class="mrow" style="margin-top:6px"><span>Rule A Alpha</span><b class="pos">+1.21% Mean (61.5% Win)</b></div>
+        </div>
+
+        <div class="stat" style="border-left:3px solid var(--blue)">
+          <div class="lbl">BEST SELLING WINDOW</div>
+          <div class="val" style="color:var(--blue);font-size:18px">10:30–11:30 AM</div>
+          <div class="sub">Captures peak daily price (+0.50% from open)</div>
+          <div class="mrow" style="margin-top:6px"><span>Late Day Exit</span><b style="color:#7183a1">+0.22% (compressed)</b></div>
+        </div>
+
+        <div class="stat" style="border-left:3px solid var(--orange)">
+          <div class="lbl">INTRADAY EXTREMES</div>
+          <div class="mrow"><span>Peak Daily Low</span><b style="color:var(--orange)">09:15–09:30 (73.3%)</b></div>
+          <div class="mrow"><span>Peak Daily High</span><b style="color:var(--orange)">09:15 or 15:00 (73.3%)</b></div>
+          <div class="mrow"><span>Mid-day Trap</span><b class="neg">-0.26% Drift (11AM–2PM)</b></div>
+        </div>
+
+        <div class="stat" style="border-left:3px solid #2b6cb0">
+          <div class="lbl">WEEKLY STRATEGY BACKTEST</div>
+          <div class="val" style="color:#2b6cb0;font-size:18px">+11.65% Net</div>
+          <div class="mrow"><span>Win Rate / Trades</span><b>42.9% (14 Trades)</b></div>
+          <div class="mrow"><span>Max Drawdown</span><b class="pos">-6.80% (vs -7.59% B&amp;H)</b></div>
+          <div class="mrow"><span>Market Exposure</span><b>Only ~45% of time</b></div>
+        </div>
+
+        <div class="stat" style="border-left:3px solid #005b6e">
+          <div class="lbl">ETF iNAV PREMIUM</div>
+          <div class="val" style="color:#005b6e;font-size:18px">+5.41%</div>
+          <div class="sub">MAFANG vs Synthetic ($NYFANG × USDINR)</div>
+          <div class="mrow" style="margin-top:6px"><span>Market Arbitrage</span><b style="color:#005b6e">Retail Demand Premium</b></div>
+        </div>
+      </div>
+
+      <!-- Action Chips Bar -->
+      <div class="chipbar" style="margin:12px 0 10px">
+        <span style="font-size:12px;font-weight:700;color:var(--navy);margin-right:6px">Quantitative Tools &amp; Reports:</span>
+        <button class="chip chip-ai" onclick="openStreamlitMafang()">🚀 Open Deep Streamlit Engine (Port 8501)</button>
+        <button class="chip" onclick="openExcelMafang()">📊 Master Excel Audit Sheet</button>
+        <button class="chip" onclick="openReportMafang()">📄 Executive Markdown Report</button>
+      </div>
+
+      <!-- Candidate Windows & Executable Rules Table -->
+      <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:13px;font-weight:700;color:var(--navy)">🎯 Candidate Buying Windows &amp; Executable Entry Rules (Rules A–D)</span>
+          <span style="font-size:11px;color:#7183a1">Validated on 5-Minute Resolution Bars</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:#f1f5f9;color:var(--txt);border-bottom:1.5px solid var(--line)">
+              <th style="padding:7px;text-align:left">Window</th>
+              <th style="padding:7px;text-align:center">Baseline Mean Ret</th>
+              <th style="padding:7px;text-align:center">Win Rate</th>
+              <th style="padding:7px;text-align:center">MFE (Peak)</th>
+              <th style="padding:7px;text-align:center">MAE (Drop)</th>
+              <th style="padding:7px;text-align:center">Rule A (Drop ≥1%)</th>
+              <th style="padding:7px;text-align:center">Rule B (Drop ≥3% from High)</th>
+              <th style="padding:7px;text-align:center">Rule D (Green Bounce)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid #eef2f6;background:#f0fdf4">
+              <td style="padding:7px;font-weight:700">09:15–09:30 AM</td>
+              <td style="padding:7px;text-align:center;font-weight:700;color:var(--green)">+0.235%</td>
+              <td style="padding:7px;text-align:center">28.3%</td>
+              <td style="padding:7px;text-align:center">+1.33%</td>
+              <td style="padding:7px;text-align:center;color:var(--red)">-1.04%</td>
+              <td style="padding:7px;text-align:center;font-weight:800;color:var(--green)">+1.209% (61.5% Win) ★</td>
+              <td style="padding:7px;text-align:center">+0.557% (50.0% Win)</td>
+              <td style="padding:7px;text-align:center">+0.251% (66.7% Win)</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6;background:#f0fdf4">
+              <td style="padding:7px;font-weight:700">09:30–10:00 AM</td>
+              <td style="padding:7px;text-align:center;font-weight:700;color:var(--green)">+0.138%</td>
+              <td style="padding:7px;text-align:center">23.3%</td>
+              <td style="padding:7px;text-align:center">+1.05%</td>
+              <td style="padding:7px;text-align:center;color:#475569">-0.79% (Safest)</td>
+              <td style="padding:7px;text-align:center">+0.010% (50.0% Win)</td>
+              <td style="padding:7px;text-align:center;color:var(--red)">-1.787%</td>
+              <td style="padding:7px;text-align:center;color:var(--red)">-1.660%</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6">
+              <td style="padding:7px;font-weight:600">10:00–10:30 AM</td>
+              <td style="padding:7px;text-align:center">+0.037%</td>
+              <td style="padding:7px;text-align:center">23.3%</td>
+              <td style="padding:7px;text-align:center">+0.81%</td>
+              <td style="padding:7px;text-align:center">-0.73%</td>
+              <td style="padding:7px;text-align:center">+0.313% (42.9% Win)</td>
+              <td style="padding:7px;text-align:center">-0.642%</td>
+              <td style="padding:7px;text-align:center">-1.012%</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6">
+              <td style="padding:7px;font-weight:600">10:30–11:00 AM</td>
+              <td style="padding:7px;text-align:center;color:var(--red)">-0.129%</td>
+              <td style="padding:7px;text-align:center">18.3%</td>
+              <td style="padding:7px;text-align:center">+0.56%</td>
+              <td style="padding:7px;text-align:center">-0.77%</td>
+              <td style="padding:7px;text-align:center">-0.187%</td>
+              <td style="padding:7px;text-align:center">-0.486%</td>
+              <td style="padding:7px;text-align:center">-0.973%</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6;background:#fef2f2">
+              <td style="padding:7px;font-weight:600;color:var(--red)">11:00 AM–12:00 PM</td>
+              <td style="padding:7px;text-align:center;color:var(--red);font-weight:700">-0.263%</td>
+              <td style="padding:7px;text-align:center">15.0%</td>
+              <td style="padding:7px;text-align:center">+0.40%</td>
+              <td style="padding:7px;text-align:center">-0.81%</td>
+              <td style="padding:7px;text-align:center">-0.876%</td>
+              <td style="padding:7px;text-align:center">-1.504%</td>
+              <td style="padding:7px;text-align:center">-1.412%</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6;background:#fef2f2">
+              <td style="padding:7px;font-weight:600;color:var(--red)">12:00–1:00 PM</td>
+              <td style="padding:7px;text-align:center;color:var(--red);font-weight:700">-0.258%</td>
+              <td style="padding:7px;text-align:center">15.0%</td>
+              <td style="padding:7px;text-align:center">+0.33%</td>
+              <td style="padding:7px;text-align:center">-0.76%</td>
+              <td style="padding:7px;text-align:center">-0.437%</td>
+              <td style="padding:7px;text-align:center">-0.870%</td>
+              <td style="padding:7px;text-align:center">-0.715%</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6;background:#fef2f2">
+              <td style="padding:7px;font-weight:600;color:var(--red)">1:00–2:00 PM</td>
+              <td style="padding:7px;text-align:center;color:var(--red);font-weight:700">-0.257%</td>
+              <td style="padding:7px;text-align:center">16.7%</td>
+              <td style="padding:7px;text-align:center">+0.28%</td>
+              <td style="padding:7px;text-align:center">-0.73%</td>
+              <td style="padding:7px;text-align:center">-1.024%</td>
+              <td style="padding:7px;text-align:center">-0.504%</td>
+              <td style="padding:7px;text-align:center">-0.784%</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6">
+              <td style="padding:7px;font-weight:600">2:00–2:45 PM</td>
+              <td style="padding:7px;text-align:center;color:var(--red)">-0.165%</td>
+              <td style="padding:7px;text-align:center">15.0%</td>
+              <td style="padding:7px;text-align:center">+0.32%</td>
+              <td style="padding:7px;text-align:center">-0.61%</td>
+              <td style="padding:7px;text-align:center">-0.226%</td>
+              <td style="padding:7px;text-align:center">-0.502%</td>
+              <td style="padding:7px;text-align:center">-0.938%</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eef2f6">
+              <td style="padding:7px;font-weight:600">2:45–3:15 PM</td>
+              <td style="padding:7px;text-align:center;color:var(--red)">-0.194%</td>
+              <td style="padding:7px;text-align:center">13.3%</td>
+              <td style="padding:7px;text-align:center">+0.25%</td>
+              <td style="padding:7px;text-align:center">-0.62%</td>
+              <td style="padding:7px;text-align:center">-0.471%</td>
+              <td style="padding:7px;text-align:center">-0.449%</td>
+              <td style="padding:7px;text-align:center">+0.356%</td>
+            </tr>
+            <tr style="background:#f8fafc">
+              <td style="padding:7px;font-weight:600">3:15–3:30 PM</td>
+              <td style="padding:7px;text-align:center;color:var(--green)">+0.039%</td>
+              <td style="padding:7px;text-align:center">26.7%</td>
+              <td style="padding:7px;text-align:center">+0.29%</td>
+              <td style="padding:7px;text-align:center">-0.33%</td>
+              <td style="padding:7px;text-align:center">+0.476% (60.0% Win)</td>
+              <td style="padding:7px;text-align:center">+0.410% (54.5% Win)</td>
+              <td style="padding:7px;text-align:center">+0.322% (66.7% Win)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Target Hit Probabilities Table -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px">
+          <span style="font-size:13px;font-weight:700;color:var(--navy);display:block;margin-bottom:8px">📈 Profit Target Realization Horizons</span>
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead>
+              <tr style="background:#f1f5f9;color:var(--txt);border-bottom:1.5px solid var(--line)">
+                <th style="padding:6px;text-align:left">Target</th>
+                <th style="padding:6px;text-align:center">30 Min</th>
+                <th style="padding:6px;text-align:center">Same Day</th>
+                <th style="padding:6px;text-align:center">1 Day</th>
+                <th style="padding:6px;text-align:center">3 Days</th>
+                <th style="padding:6px;text-align:center">5 Days</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:1px solid #eef2f6"><td style="padding:6px;font-weight:700">+1%</td><td style="text-align:center">11.5%</td><td style="text-align:center">25.9%</td><td style="text-align:center">47.7%</td><td style="text-align:center;font-weight:700;color:var(--green)">65.6%</td><td style="text-align:center;font-weight:800;color:var(--green)">75.8%</td></tr>
+              <tr style="border-bottom:1px solid #eef2f6"><td style="padding:6px;font-weight:700">+2%</td><td style="text-align:center">4.4%</td><td style="text-align:center">17.3%</td><td style="text-align:center">34.7%</td><td style="text-align:center;font-weight:700;color:var(--green)">51.4%</td><td style="text-align:center;font-weight:800;color:var(--green)">60.4%</td></tr>
+              <tr style="border-bottom:1px solid #eef2f6;background:#f0fdf4"><td style="padding:6px;font-weight:800;color:var(--green)">+3%</td><td style="text-align:center;color:var(--red)">1.9%</td><td style="text-align:center;color:var(--red)">9.4%</td><td style="text-align:center">25.8%</td><td style="text-align:center;font-weight:700;color:var(--green)">38.8%</td><td style="text-align:center;font-weight:800;color:var(--green)">47.3% ★</td></tr>
+              <tr style="border-bottom:1px solid #eef2f6"><td style="padding:6px;font-weight:700">+5%</td><td style="text-align:center">0.3%</td><td style="text-align:center">1.2%</td><td style="text-align:center">17.1%</td><td style="text-align:center">30.5%</td><td style="text-align:center">39.5%</td></tr>
+              <tr style="border-bottom:1px solid #eef2f6"><td style="padding:6px;font-weight:700">+7%</td><td style="text-align:center">0.0%</td><td style="text-align:center">0.0%</td><td style="text-align:center">9.7%</td><td style="text-align:center">23.5%</td><td style="text-align:center">31.8%</td></tr>
+              <tr><td style="padding:6px;font-weight:700">+10%</td><td style="text-align:center">0.0%</td><td style="text-align:center">0.0%</td><td style="text-align:center">4.2%</td><td style="text-align:center">13.8%</td><td style="text-align:center">22.2%</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px">
+          <span style="font-size:13px;font-weight:700;color:var(--navy);display:block;margin-bottom:8px">⚖️ Strategy Rules &amp; Capital Execution</span>
+          <div style="font-size:11.5px;line-height:1.6;color:var(--txt)">
+            <p><b>1. Monday/Tuesday (50% + 50% Core):</b> Enter at <b>09:30 AM</b> instead of 09:15 AM to eliminate ~20 bps in opening spread friction. Exit on Wednesday at <b>10:30–11:30 AM</b> (or at Wed close fallback).</p>
+            <p><b>2. Thursday 3% Dip Rule:</b> Intraday drops ≥3% are rare (~3–6% of sessions) but provide high-asymmetry bounce opportunities. Enter at next bar open.</p>
+            <p><b>3. Friday 3% Target Exit:</b> Holding <b>3 to 5 days</b> increases +3% target probability from <b>9.4% to 47.3%</b>. Carry forward unresolved positions if target is not hit on Friday.</p>
+            <p><b>4. All Statutory Charges Included:</b> STT (0.001%), GST (18%), SEBI turnover, stamp duty, DP charges, and brokerage are factored in.</p>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1303,9 +1524,38 @@ function showTab(t){
   document.getElementById('tab-dash').classList.toggle('hidden', t!=='dash');
   document.getElementById('tab-dropouts').classList.toggle('hidden', t!=='dropouts');
   document.getElementById('tab-excel').classList.toggle('hidden', t!=='excel');
+  document.getElementById('tab-mafang')?.classList.toggle('hidden', t!=='mafang');
   document.getElementById('tab-settings').classList.toggle('hidden', t!=='settings');
   if (t === 'dropouts') renderDropouts();
   if (t === 'excel') renderMasterExcel();
+  if (t === 'mafang') renderMafangTab();
+}
+
+function renderMafangTab() {
+  const d = new Date().getDay();
+  const rules = [
+    "Sunday: Weekend Review — Weekly strategy audited at +11.65% Net Gain (Max Drawdown -6.80%)",
+    "Monday: Buy 50% Planned Core Allocation at 09:30 AM IST (Avoid 09:15 chaotic open spread)",
+    "Tuesday: Buy remaining 50% Core Allocation at 09:30 AM IST",
+    "Wednesday: Target Exit between 10:30–11:30 AM IST (or at 15:15 Wednesday close fallback)",
+    "Thursday: Tactical Dip Monitor Active — Trigger Buy if MAFANG falls >3% from session high",
+    "Friday: Sell Thursday Tactical Position if profit >3% or exit at 15:15 Friday close",
+    "Saturday: Weekend Review — All metrics verified across 2021–2026 dataset"
+  ];
+  const el = document.getElementById('mafangTodayRule');
+  if (el) el.textContent = rules[d];
+}
+
+function openStreamlitMafang() {
+  window.open('http://localhost:8501', '_blank');
+}
+
+function openExcelMafang() {
+  window.open('file:///C:/Users/syful/.gemini/antigravity/scratch/mafang_intraday_analyzer/reports/mafang_complete_results.xlsx', '_blank');
+}
+
+function openReportMafang() {
+  window.open('file:///C:/Users/syful/.gemini/antigravity/scratch/mafang_intraday_analyzer/reports/FINAL_EXECUTIVE_REPORT.md', '_blank');
 }
 
 /* ==================== DROPOUTS TAB LOGIC ==================== */
