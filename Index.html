@@ -374,13 +374,13 @@
       <div id="excelSheetPills" class="chipbar" style="margin-bottom:8px"></div>
       <div id="excelFilterBar" class="chipbar hidden" style="margin-bottom:10px"></div>
 
-      <div class="tblwrap" id="excelTableWrap" style="max-height:72vh;overflow:auto;border:1px solid var(--line);border-radius:6px">
+      <div class="tblwrap" id="excelTableWrap" style="max-height:72vh;overflow-y:auto;overflow-x:hidden;border:1px solid var(--line);border-radius:6px;width:100%">
         <div id="excelEmptyMsg" style="padding:48px 20px;text-align:center;color:var(--mut)">
           <div style="font-size:36px;margin-bottom:10px">📊</div>
           <b style="font-size:14px;color:var(--navy)">No Excel sheet data loaded yet</b><br>
           <span style="font-size:12px;margin-top:4px;display:inline-block">Upload your Master Portfolio Excel file (<code>.xlsx</code> / <code>.csv</code>) using the button above or in the sidebar.</span>
         </div>
-        <table id="excelTable" class="hidden" style="table-layout:auto;min-width:100%;border-collapse:collapse">
+        <table id="excelTable" class="hidden" style="table-layout:fixed;width:100%;border-collapse:collapse">
           <thead id="excelThead"></thead>
           <tbody id="excelTbody"></tbody>
         </table>
@@ -849,10 +849,29 @@ const KNOWN_ETF_SYMBOLS = [
   'HDFCNIFETF', 'ICICINIFTY', 'SETFNIF50'
 ];
 
+const SYMBOL_ALIASES = {
+  'CEMPRO': 'CEMPROJ',
+  'CEMPROJ': 'CEMPRO',
+  'JSLL': 'JEENA',
+  'JEENA': 'JSLL',
+  'JSL': 'JSLL',
+  'SHILCTECH': 'SHILCHAR',
+  'SHILCHAR': 'SHILCTECH',
+  'TRANSRAILL': 'TRANSRAIL',
+  'TRANSRAIL': 'TRANSRAILL'
+};
+
+function getCanonicalSymbol(sym) {
+  if (!sym) return '';
+  const s = String(sym).trim().toUpperCase();
+  return SYMBOL_ALIASES[s] || s;
+}
+
 function isEtf(sym){
   if (!sym) return false;
   const s = String(sym).trim().toUpperCase();
-  return /BEES$|ETF$/.test(s) || /^MON\d+/.test(s) || /^MONQ\d+/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1;
+  const canon = SYMBOL_ALIASES[s] || s;
+  return /BEES$|ETF$/.test(s) || /^MON\d+/.test(s) || /^MONQ\d+/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1 || KNOWN_ETF_SYMBOLS.indexOf(canon) > -1;
 }
 
 function getMasterSheetInOutMap() {
@@ -880,44 +899,80 @@ function getMasterSheetInOutMap() {
       if (n) colMap[n] = i;
     });
 
-    const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
-    if (stockCol == null) return;
-
+    const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
     const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-    const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
+    const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : colMap['STATUS']);
+
+    const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
+    const mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
+    const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
+                   : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
+                   : (colMap['TICKER'] != null ? colMap['TICKER'] 
+                   : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
+                   : (colMap['CODE'] != null ? colMap['CODE'] 
+                   : (colMap['ETF'] != null ? colMap['ETF'] 
+                   : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
+
+    if (stockCol == null && p1CodeCol == null && mCodeCol == null) return;
 
     const sheetUpper = String(sName).trim().toUpperCase();
-    const isSheetIN = sheetUpper === 'IN' || sheetUpper.startsWith('IN ');
-    const isSheetOUT = sheetUpper === 'OUT' || sheetUpper.startsWith('OUT ');
+    const isSheetIN = sheetUpper === 'IN' || sheetUpper.startsWith('IN ') || sheetUpper.startsWith('IN_') || sheetUpper.startsWith('IN-');
+    const isSheetOUT = sheetUpper === 'OUT' || sheetUpper.startsWith('OUT ') || sheetUpper.startsWith('OUT_') || sheetUpper.startsWith('OUT-');
 
     for (let r = headerRowIdx + 1; r < rows.length; r++) {
       const row = rows[r];
       if (!row || !row.length) continue;
-      const sym = String(row[stockCol] || '').trim().toUpperCase();
-      if (!sym) continue;
 
-      if (isEtf(sym)) {
-        map[sym] = 'ETF';
-        continue;
+      const syms = [];
+      if (stockCol != null) {
+        const s = String(row[stockCol] || '').trim().toUpperCase();
+        if (s) syms.push(s);
       }
+      if (p1CodeCol != null) {
+        const s = String(row[p1CodeCol] || '').trim().toUpperCase();
+        if (s && syms.indexOf(s) === -1) syms.push(s);
+      }
+      if (mCodeCol != null) {
+        const s = String(row[mCodeCol] || '').trim().toUpperCase();
+        if (s && syms.indexOf(s) === -1) syms.push(s);
+      }
+      if (!syms.length) continue;
+
+      const statusVal = statusCol != null ? String(row[statusCol] || '').trim().toUpperCase() : '';
+      const bVal = bucketCol != null ? String(row[bucketCol] || '').trim().toUpperCase() : '';
+      const decVal = decCol != null ? String(row[decCol] || '').trim().toUpperCase() : '';
 
       let val = '';
-      if (bucketCol != null) {
-        const b = String(row[bucketCol] || '').trim().toUpperCase();
-        if (b === 'IN' || b === 'OUT') val = b;
-      }
-      if (!val && decCol != null) {
-        const d = String(row[decCol] || '').trim().toUpperCase();
-        if (d === 'IN' || d === 'OUT') val = d;
-      }
-      if (!val) {
-        if (isSheetIN) val = 'IN';
-        else if (isSheetOUT) val = 'OUT';
+      if (statusVal === 'ETF' || bVal === 'ETF' || decVal === 'ETF') {
+        val = 'ETF';
+      } else if (statusVal === 'IN' || bVal === 'IN' || decVal === 'IN' ||
+                 statusVal.startsWith('IN') || bVal.startsWith('IN') || decVal.startsWith('IN') ||
+                 decVal.indexOf('STRONG IN') > -1 || decVal.indexOf('KEEP IN') > -1 || decVal.indexOf('IN —') > -1 ||
+                 decVal.indexOf('IN -') > -1 || decVal.indexOf('HIGH-RISK IN') > -1) {
+        val = 'IN';
+      } else if (statusVal === 'OUT' || bVal === 'OUT' || decVal === 'OUT' ||
+                 statusVal.startsWith('OUT') || bVal.startsWith('OUT') || decVal.startsWith('OUT') ||
+                 decVal.indexOf('EXIT') > -1 || decVal.indexOf('REPLACED') > -1 || decVal.indexOf('REDUCTION') > -1 ||
+                 decVal.indexOf('FAILURE') > -1) {
+        val = 'OUT';
+      } else if (isSheetIN) {
+        val = 'IN';
+      } else if (isSheetOUT) {
+        val = 'OUT';
       }
 
-      if (val) {
-        map[sym] = val;
-      }
+      syms.forEach(sym => {
+        if (isEtf(sym)) {
+          map[sym] = 'ETF';
+        } else if (val) {
+          map[sym] = val;
+        }
+        // Bidirectional mapping for aliases
+        const alias = SYMBOL_ALIASES[sym];
+        if (alias && !map[alias]) {
+          map[alias] = isEtf(alias) ? 'ETF' : val;
+        }
+      });
     }
   });
 
@@ -966,15 +1021,16 @@ function makeRow(h, port, inOutMap){
   const lowATHPct = (allTimeHigh > 0 && ltp > 0) ? ((allTimeHigh - ltp) / allTimeHigh * 100) : 0;
 
   // Screener 12-month status & screener membership
-  const etf = isEtf(h.sym);
+  const canon = getCanonicalSymbol(h.sym);
+  const etf = isEtf(h.sym) || (canon && isEtf(canon));
 
   // Master Sheet Candidate determination: ETFs are treated as ETF candidates, not IN/OUT
-  const inOut = etf ? 'ETF' : ((inOutMap && inOutMap[h.sym]) || '');
+  const inOut = etf ? 'ETF' : ((inOutMap && (inOutMap[h.sym] || (canon && inOutMap[canon]))) || '');
   const scrs = DATA.screeners || {};
-  const inCmp = (scrs.compounder && scrs.compounder.indexOf(h.sym) > -1) || false;
-  const inQlt = (scrs.quality && scrs.quality.indexOf(h.sym) > -1) || false;
-  const inScreener = etf || inCmp || inQlt || (DATA.screener && DATA.screener.indexOf(h.sym) > -1);
-  const scInfo = (DATA.screenerHistory && DATA.screenerHistory[h.sym]) || null;
+  const inCmp = (scrs.compounder && (scrs.compounder.indexOf(h.sym) > -1 || (canon && scrs.compounder.indexOf(canon) > -1))) || false;
+  const inQlt = (scrs.quality && (scrs.quality.indexOf(h.sym) > -1 || (canon && scrs.quality.indexOf(canon) > -1))) || false;
+  const inScreener = etf || inCmp || inQlt || (DATA.screener && (DATA.screener.indexOf(h.sym) > -1 || (canon && DATA.screener.indexOf(canon) > -1)));
+  const scInfo = (DATA.screenerHistory && (DATA.screenerHistory[h.sym] || (canon && DATA.screenerHistory[canon]))) || null;
   let scrObj = null;
   if (etf) {
     // Uploaded ETFs are permanently screened
@@ -2136,6 +2192,9 @@ function renderCurrentSheetTable() {
     'QUANTITY',
     'PE (X)',
     'PE',
+    'APPROX. P/E',
+    'APPROX P/E',
+    'APPROX. PE',
     'MCAP (₹ CR)',
     'MCAP',
     'MARKET CAP',
@@ -2144,7 +2203,15 @@ function renderCurrentSheetTable() {
     'MASTER REASON',
     'SELECTION BASIS',
     'MASTER SOURCE',
-    'LATEST CSV SOURCE'
+    'LATEST CSV SOURCE',
+    'CURRENT P1 VALUE (₹)',
+    'CURRENT P1 VALUE',
+    'P1 CURRENT VALUE (₹)',
+    'P1 CURRENT VALUE',
+    'P1 VALUE',
+    'COMBINED BUSINESS ANALYSIS — GROWTH + QUALITY/RETURNS + ORDER/STRUCTURAL VISIBILITY + MANAGEMENT/GOVERNANCE',
+    'COMBINED BUSINESS ANALYSIS',
+    'BUSINESS ANALYSIS'
   ];
 
   // Identify visible/rendered columns
@@ -2153,7 +2220,10 @@ function renderCurrentSheetTable() {
     const text = String(h != null ? h : '').trim();
     if (!text) return;
     const upper = text.toUpperCase();
-    if (EXCLUDED_MASTER_COLUMNS.indexOf(upper) === -1) {
+    const isExcluded = EXCLUDED_MASTER_COLUMNS.indexOf(upper) > -1 ||
+                       upper.indexOf('BUSINESS ANALYSIS') > -1 ||
+                       upper.indexOf('COMBINED BUSINESS') > -1;
+    if (!isExcluded) {
       renderedColumns.push({
         origIndex: i,
         name: text,
@@ -2169,13 +2239,23 @@ function renderCurrentSheetTable() {
     if (name) colMap[name] = i;
   });
 
+  const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
   const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
   const portCol = colMap['LATEST PORT'] != null ? colMap['LATEST PORT'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['BUCKET']);
-  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+  const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
+  const mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
+  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
+                 : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
+                 : (colMap['TICKER'] != null ? colMap['TICKER'] 
+                 : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
+                 : (colMap['CODE'] != null ? colMap['CODE'] 
+                 : (colMap['ETF'] != null ? colMap['ETF'] 
+                 : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
+
   const qualCol = colMap['QUALIFICATION'] != null ? colMap['QUALIFICATION'] : colMap['QUAL'];
   const eCol = colMap['E'] != null ? colMap['E'] : (colMap['ELIGIBILITY'] != null ? colMap['ELIGIBILITY'] : (colMap['EARNINGS'] != null ? colMap['EARNINGS'] : null));
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
-  const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
+  const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : colMap['STATUS']);
 
   const p1Col = colMap['P1'] != null ? colMap['P1']
               : (colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
@@ -2200,7 +2280,7 @@ function renderCurrentSheetTable() {
     ? DATA.screeners.quality.map(s => String(s || '').trim().toUpperCase())
     : [];
 
-  const hasStocks = stockCol != null || bucketCol != null || p1Col != null || p2Col != null;
+  const hasStocks = stockCol != null || bucketCol != null || p1Col != null || p2Col != null || p1CodeCol != null || mCodeCol != null;
   const hasQCol = renderedColumns.some(c => ['Q', 'QUALITY', 'QLT'].indexOf(c.upper) > -1);
   if (hasStocks && !hasQCol) {
     const cIdx = renderedColumns.findIndex(c => c.upper === 'C');
@@ -2228,21 +2308,37 @@ function renderCurrentSheetTable() {
   };
 
   dataRows.forEach(row => {
+    const statusVal = statusCol != null ? String(row[statusCol] || '').trim().toUpperCase() : '';
     const bVal = bucketCol != null ? String(row[bucketCol] || '').trim().toUpperCase() : '';
     const portVal = portCol != null ? String(row[portCol] || '').trim().toUpperCase() : '';
     const decVal = decCol != null ? String(row[decCol] || '').trim().toUpperCase() : '';
-    const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+    
+    let sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+    if (!sym && p1CodeCol != null) sym = String(row[p1CodeCol] || '').trim().toUpperCase();
+    if (!sym && mCodeCol != null) sym = String(row[mCodeCol] || '').trim().toUpperCase();
+    const canon = getCanonicalSymbol(sym);
+
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isAnETF = isEtf(sym) || bVal === 'ETF' || decVal === 'ETF';
-    const isIN = !isAnETF && (bVal === 'IN' || decVal === 'IN');
-    const isOUT = !isAnETF && (bVal === 'OUT' || decVal === 'OUT');
+    const isAnETF = isEtf(sym) || (canon && isEtf(canon)) || statusVal === 'ETF' || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isAnETF && (
+      statusVal === 'IN' || bVal === 'IN' || decVal === 'IN' ||
+      statusVal.startsWith('IN') || bVal.startsWith('IN') || decVal.startsWith('IN') ||
+      decVal.indexOf('STRONG IN') > -1 || decVal.indexOf('KEEP IN') > -1 || decVal.indexOf('IN —') > -1 ||
+      decVal.indexOf('IN -') > -1 || decVal.indexOf('HIGH-RISK IN') > -1
+    );
+    const isOUT = !isAnETF && !isIN && (
+      statusVal === 'OUT' || bVal === 'OUT' || decVal === 'OUT' ||
+      statusVal.startsWith('OUT') || bVal.startsWith('OUT') || decVal.startsWith('OUT') ||
+      decVal.indexOf('EXIT') > -1 || decVal.indexOf('REPLACED') > -1 || decVal.indexOf('REDUCTION') > -1 ||
+      decVal.indexOf('FAILURE') > -1
+    );
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
 
-    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
-    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
+    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
+    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
 
     let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
     let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
@@ -2258,7 +2354,7 @@ function renderCurrentSheetTable() {
 
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
-    const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
+    const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1) || (canon && qltList.indexOf(canon) > -1);
 
     if (isIN) filterCounts.IN++;
     if (isOUT) filterCounts.OUT++;
@@ -2272,7 +2368,7 @@ function renderCurrentSheetTable() {
   });
 
   const availableFilters = [];
-  if (filterCounts.IN > 0 || filterCounts.OUT > 0 || bucketCol != null || decCol != null) {
+  if (filterCounts.IN > 0 || filterCounts.OUT > 0 || bucketCol != null || decCol != null || statusCol != null) {
     availableFilters.push('IN', 'OUT');
   }
   if (filterCounts.ETF > 0) {
@@ -2304,7 +2400,7 @@ function renderCurrentSheetTable() {
     let alignClass = 'l';
     let alignStyle = '';
 
-    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'Q', 'QUALITY', 'QLT', 'P1', 'P2', 'CURRENT P1', 'CURRENT P2', 'CURR P1', 'CURR P2', 'BUCKET', 'QUALIFICATION', 'LATEST PORT', 'DECISION'].indexOf(upper) > -1) {
+    if (['#', 'NO', 'SL', 'RULE #', 'E', 'C', 'Q', 'QUALITY', 'QLT', 'P1', 'P2', 'CURRENT P1', 'CURRENT P2', 'CURR P1', 'CURR P2', 'BUCKET', 'STATUS', 'QUALIFICATION', 'LATEST PORT', 'DECISION', 'SCREENER STATUS'].indexOf(upper) > -1) {
       alignClass = '';
       alignStyle = 'text-align:center;';
     }
@@ -2313,7 +2409,7 @@ function renderCurrentSheetTable() {
     const sortIcon = isSorted ? (excelSortDir > 0 ? ' <span style="color:var(--orange);font-weight:900">↑</span>' : ' <span style="color:var(--orange);font-weight:900">↓</span>') : ' <span class="arr" style="opacity:.5;font-size:8.5px">⇅</span>';
     const thTitle = (upper === 'Q' || upper === 'QUALITY' || upper === 'QLT') ? ' title="Quality Screener"' : '';
 
-    thHtml += '<th class="' + alignClass + '" onclick="sortMasterExcelBy(' + i + ')" style="padding:9px 10px;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;border-bottom:2px solid var(--orange);font-size:11.5px;font-weight:700;letter-spacing:0.3px;white-space:nowrap;' + alignStyle + '"' + thTitle + '>' + escapeHtml(text) + sortIcon + '</th>';
+    thHtml += '<th class="' + alignClass + '" onclick="sortMasterExcelBy(' + i + ')" style="padding:7px 6px;position:sticky;top:0;z-index:2;cursor:pointer;user-select:none;border-bottom:2px solid var(--orange);font-size:11px;font-weight:700;letter-spacing:0.2px;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;' + alignStyle + '"' + thTitle + '>' + escapeHtml(text) + sortIcon + '</th>';
   });
   thHtml += '</tr>';
   thead.innerHTML = thHtml;
@@ -2354,21 +2450,37 @@ function renderCurrentSheetTable() {
       continue;
     }
 
+    const statusVal = statusCol != null ? String(row[statusCol] || '').trim().toUpperCase() : '';
     const bVal = bucketCol != null ? String(row[bucketCol] || '').trim().toUpperCase() : '';
     const portVal = portCol != null ? String(row[portCol] || '').trim().toUpperCase() : '';
     const decVal = decCol != null ? String(row[decCol] || '').trim().toUpperCase() : '';
-    const sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+
+    let sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+    if (!sym && p1CodeCol != null) sym = String(row[p1CodeCol] || '').trim().toUpperCase();
+    if (!sym && mCodeCol != null) sym = String(row[mCodeCol] || '').trim().toUpperCase();
+    const canon = getCanonicalSymbol(sym);
+
     const qVal = qualCol != null ? String(row[qualCol] || '').trim().toUpperCase() : '';
 
-    const isAnETF = isEtf(sym) || bVal === 'ETF' || decVal === 'ETF';
-    const isIN = !isAnETF && (bVal === 'IN' || decVal === 'IN');
-    const isOUT = !isAnETF && (bVal === 'OUT' || decVal === 'OUT');
+    const isAnETF = isEtf(sym) || (canon && isEtf(canon)) || statusVal === 'ETF' || bVal === 'ETF' || decVal === 'ETF';
+    const isIN = !isAnETF && (
+      statusVal === 'IN' || bVal === 'IN' || decVal === 'IN' ||
+      statusVal.startsWith('IN') || bVal.startsWith('IN') || decVal.startsWith('IN') ||
+      decVal.indexOf('STRONG IN') > -1 || decVal.indexOf('KEEP IN') > -1 || decVal.indexOf('IN —') > -1 ||
+      decVal.indexOf('IN -') > -1 || decVal.indexOf('HIGH-RISK IN') > -1
+    );
+    const isOUT = !isAnETF && !isIN && (
+      statusVal === 'OUT' || bVal === 'OUT' || decVal === 'OUT' ||
+      statusVal.startsWith('OUT') || bVal.startsWith('OUT') || decVal.startsWith('OUT') ||
+      decVal.indexOf('EXIT') > -1 || decVal.indexOf('REPLACED') > -1 || decVal.indexOf('REDUCTION') > -1 ||
+      decVal.indexOf('FAILURE') > -1
+    );
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
     const hasP2Col = p2Col != null && isCellChecked(row[p2Col]);
 
-    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
-    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && String(h.sym).trim().toUpperCase() === sym && Number(h.qty) > 0) : false;
+    const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
+    const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
 
     let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
     let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
@@ -2384,7 +2496,7 @@ function renderCurrentSheetTable() {
 
     const isE = (eCol != null && isCellChecked(row[eCol])) || qVal.indexOf('E') > -1;
     const isC = (cCol != null && isCellChecked(row[cCol])) || qVal.indexOf('C') > -1;
-    const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1);
+    const isQ = (qltCol != null && isCellChecked(row[qltCol])) || qVal.indexOf('Q') > -1 || (sym && qltList.indexOf(sym) > -1) || (canon && qltList.indexOf(canon) > -1);
 
     let dataAttrs = ' data-in="' + (isIN ? '1' : '0') + '"' +
                     ' data-out="' + (isOUT ? '1' : '0') + '"' +
@@ -2416,11 +2528,11 @@ function renderCurrentSheetTable() {
 
       if (['#', 'NO', 'SL', 'RULE #'].indexOf(colName) > -1) {
         alignClass = '';
-        alignStyle = 'text-align:center;width:40px;';
+        alignStyle = 'text-align:center;width:35px;';
         cellDisplay = '<span style="color:var(--mut);font-weight:600;font-size:11px">' + escapeHtml(val) + '</span>';
       } else if (['E', 'C', 'Q', 'QUALITY', 'QLT', 'P1', 'P2'].indexOf(colName) > -1) {
         alignClass = '';
-        alignStyle = 'text-align:center;width:44px;';
+        alignStyle = 'text-align:center;width:40px;';
         const checked = (colName === 'Q' || colName === 'QUALITY' || colName === 'QLT') ? isQ : isCellChecked(val);
         if (checked) {
           cellDisplay = '<span class="badge b-buy" style="font-size:10px;padding:2px 6px">✓</span>';
@@ -2429,43 +2541,71 @@ function renderCurrentSheetTable() {
         }
       } else if (['CURRENT P1', 'CURRENT P2', 'CURR P1', 'CURR P2'].indexOf(colName) > -1) {
         alignClass = '';
-        alignStyle = 'text-align:center;width:80px;';
+        alignStyle = 'text-align:center;width:65px;';
         if (isCellChecked(val)) {
           cellDisplay = '<span class="badge b-buy" style="font-size:10px;padding:2px 8px;font-weight:700">✓</span>';
         } else {
           cellDisplay = '<span style="color:#cbd5e1">—</span>';
         }
-      } else if (colName === 'BUCKET' || colName === 'LATEST PORT' || colName === 'DECISION') {
+      } else if (colName === 'STATUS' || colName === 'BUCKET' || colName === 'LATEST PORT') {
         alignClass = '';
-        alignStyle = 'text-align:center;';
+        alignStyle = 'text-align:center;width:60px;';
         const u = val.toUpperCase();
         if (isEtf(sym) || u === 'ETF') cellDisplay = '<span class="badge b-etf" style="font-weight:700">ETF</span>';
         else if (u === 'P1') cellDisplay = '<span class="badge b-hold" style="font-weight:700">P1</span>';
         else if (u === 'P2') cellDisplay = '<span class="badge b-rally" style="font-weight:700">P2</span>';
-        else if (u === 'IN') cellDisplay = '<span class="badge b-buy" style="font-weight:700">IN</span>';
-        else if (u === 'OUT') cellDisplay = '<span class="badge b-exit" style="font-weight:700">OUT</span>';
+        else if (u === 'IN' || u.startsWith('IN')) cellDisplay = '<span class="badge b-buy" style="font-weight:700">IN</span>';
+        else if (u === 'OUT' || u.startsWith('OUT')) cellDisplay = '<span class="badge b-exit" style="font-weight:700">OUT</span>';
         else if (u === '—' || u === '-' || !u) cellDisplay = '<span style="color:#cbd5e1">—</span>';
+      } else if (colName === 'DECISION') {
+        alignClass = '';
+        alignStyle = 'text-align:center;width:95px;font-size:11px;';
+        const u = val.toUpperCase();
+        if (u === 'IN' || u.indexOf('STRONG IN') > -1 || u.indexOf('KEEP IN') > -1) {
+          cellDisplay = '<span class="badge b-buy" style="font-weight:700;font-size:10px" title="' + escapeHtml(val) + '">' + escapeHtml(val) + '</span>';
+        } else if (u === 'OUT' || u.indexOf('EXIT') > -1 || u.indexOf('REPLACED') > -1 || u.indexOf('REDUCTION') > -1) {
+          cellDisplay = '<span class="badge b-exit" style="font-weight:700;font-size:10px" title="' + escapeHtml(val) + '">' + escapeHtml(val) + '</span>';
+        } else {
+          cellDisplay = '<span style="font-size:10.5px;color:#475569" title="' + escapeHtml(val) + '">' + escapeHtml(val) + '</span>';
+        }
       } else if (colName === 'QUALIFICATION' || colName === 'QUAL') {
         alignClass = '';
-        alignStyle = 'text-align:center;';
+        alignStyle = 'text-align:center;width:70px;';
         const u = val.toUpperCase();
         if (u === 'C+M') cellDisplay = '<span class="badge" style="background:#e0e7ff;color:#3730a3;font-weight:700;border:1px solid #c7d2fe">C+M</span>';
         else if (u === 'C') cellDisplay = '<span class="badge" style="background:#ecfdf5;color:#065f46;font-weight:700;border:1px solid #a7f3d0">C</span>';
         else if (u === 'M') cellDisplay = '<span class="badge" style="background:#fffbeb;color:#92400e;font-weight:700;border:1px solid #fde68a">M</span>';
         else if (u === 'CONVICTION') cellDisplay = '<span class="badge" style="background:#f3e8ff;color:#6b21a8;font-weight:700;border:1px solid #d8b4fe">★ Conviction</span>';
         else if (u === '—' || u === '-' || !u) cellDisplay = '<span style="color:#cbd5e1">—</span>';
-      } else if (colName === 'STOCK' || colName === 'SYMBOL' || colName === 'ETF' || colName === 'INSTRUMENT') {
+      } else if (colName === 'STOCK' || colName === 'SYMBOL' || colName === 'ETF' || colName === 'INSTRUMENT' || colName.indexOf('CODE') > -1) {
         alignClass = 'l';
-        cellDisplay = '<b class="sym" style="font-size:12.5px;color:var(--navy);letter-spacing:0.3px">' + escapeHtml(val) + '</b>';
+        alignStyle = 'width:85px;';
+        cellDisplay = '<b class="sym" style="font-size:12px;color:var(--navy);letter-spacing:0.2px">' + escapeHtml(val) + '</b>';
+      } else if (colName === 'COMPANY NAME') {
+        alignClass = 'l';
+        alignStyle = 'width:120px;';
+        cellDisplay = '<span style="color:#1e293b;font-weight:600;font-size:11.5px">' + escapeHtml(val) + '</span>';
       } else if (colName === 'SECTOR') {
         alignClass = 'l';
-        cellDisplay = val ? ('<span style="display:inline-block;padding:2px 7px;border-radius:4px;background:#f1f5f9;color:#334155;font-size:11px;font-weight:500">' + escapeHtml(val) + '</span>') : '<span style="color:#cbd5e1">—</span>';
-      } else if (['REASON', 'DESCRIPTION', 'IMPLEMENTATION', 'AGREED RULE', 'TREATMENT', 'SOURCE / NOTE', 'VALUE', 'STOCKS', '% OF 60', 'METRIC'].indexOf(colName) > -1) {
+        alignStyle = 'width:120px;';
+        cellDisplay = val ? ('<span style="display:inline-block;padding:2px 6px;border-radius:4px;background:#f1f5f9;color:#334155;font-size:10.5px;font-weight:500">' + escapeHtml(val) + '</span>') : '<span style="color:#cbd5e1">—</span>';
+      } else if (colName === 'SCREENER STATUS') {
+        alignClass = '';
+        alignStyle = 'text-align:center;width:95px;';
+        if (val.indexOf('✓') > -1 || val.toUpperCase().indexOf('PASS') > -1 || val.toUpperCase().indexOf('SCREEN') > -1) {
+          cellDisplay = '<span class="badge b-buy" style="font-size:10px;padding:2px 6px">' + escapeHtml(val) + '</span>';
+        } else {
+          cellDisplay = '<span class="badge b-hold" style="font-size:10px;padding:2px 6px">' + escapeHtml(val) + '</span>';
+        }
+      } else if (['REASON', 'DESCRIPTION', 'IMPLEMENTATION', 'AGREED RULE', 'TREATMENT', 'SOURCE / NOTE', 'VALUE', 'STOCKS', '% OF 60', 'METRIC'].indexOf(colName) > -1 || colName.indexOf('FAILURE') > -1 || colName.indexOf('EXCEPTION') > -1 || colName.indexOf('MISMATCH') > -1) {
         alignClass = 'l';
-        alignStyle = 'max-width:340px;min-width:160px;white-space:normal;line-height:1.4;color:#334155;font-size:11.5px;';
+        alignStyle = 'max-width:180px;min-width:110px;white-space:normal;word-break:break-word;line-height:1.3;color:#334155;font-size:11px;';
+      } else {
+        alignClass = 'l';
+        alignStyle = 'white-space:normal;word-break:break-word;line-height:1.3;color:#334155;font-size:11px;';
       }
 
-      trHtml += '<td class="' + alignClass + '" style="padding:6px 9px;border-bottom:1px solid #edf0f5;' + alignStyle + '">' + cellDisplay + '</td>';
+      trHtml += '<td class="' + alignClass + '" title="' + escapeHtml(val) + '" style="padding:5px 6px;border-bottom:1px solid #edf0f5;word-wrap:break-word;overflow-wrap:break-word;white-space:normal;' + alignStyle + '">' + cellDisplay + '</td>';
     }
     trHtml += '</tr>';
   }
@@ -2611,10 +2751,20 @@ function syncMasterExcelWithHoldings() {
       if (n) colMap[n] = i;
     });
 
-    let stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+    let statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
+    let p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
+    let mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
+    let stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
+                   : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
+                   : (colMap['TICKER'] != null ? colMap['TICKER'] 
+                   : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
+                   : (colMap['CODE'] != null ? colMap['CODE'] 
+                   : (colMap['ETF'] != null ? colMap['ETF'] 
+                   : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
+
     let bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-    let decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
-    let reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : colMap['NOTES']);
+    let decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : null);
+    let reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : (colMap['NOTES'] != null ? colMap['NOTES'] : colMap['EXACT SCREEN FAILURE / EXCEPTION']));
 
     let p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
               : (colMap['P1'] != null ? colMap['P1']
@@ -2626,7 +2776,7 @@ function syncMasterExcelWithHoldings() {
               : (colMap['CURR P2'] != null ? colMap['CURR P2']
               : (colMap['CURRENT_P2'] != null ? colMap['CURRENT_P2'] : null)));
 
-    if (stockCol == null) {
+    if (stockCol == null && p1CodeCol == null && mCodeCol == null) {
       if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Sync with Holdings'; }
       setStatus('⚠ Could not find Stock / Symbol column in this sheet.');
       return;
@@ -2645,8 +2795,12 @@ function syncMasterExcelWithHoldings() {
       for (let r = headerRowIdx + 1; r < rawRows.length; r++) {
         const row = rawRows[r];
         if (!row) continue;
-        const sym = String(row[stockCol] || '').trim().toUpperCase();
-        const isQ = sym && qltList.indexOf(sym) > -1;
+        let sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+        const p1Sym = p1CodeCol != null ? String(row[p1CodeCol] || '').trim().toUpperCase() : '';
+        const mSym = mCodeCol != null ? String(row[mCodeCol] || '').trim().toUpperCase() : '';
+        if (!sym) sym = p1Sym || mSym;
+        const canon = getCanonicalSymbol(sym);
+        const isQ = (sym && qltList.indexOf(sym) > -1) || (canon && qltList.indexOf(canon) > -1);
         row.splice(insertAt, 0, isQ ? '✓' : '');
       }
 
@@ -2656,10 +2810,19 @@ function syncMasterExcelWithHoldings() {
         const n = String(h || '').trim().toUpperCase();
         if (n) colMap[n] = i;
       });
-      stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+      statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
+      p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
+      mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
+      stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
+                     : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
+                     : (colMap['TICKER'] != null ? colMap['TICKER'] 
+                     : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
+                     : (colMap['CODE'] != null ? colMap['CODE'] 
+                     : (colMap['ETF'] != null ? colMap['ETF'] 
+                     : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
       bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-      decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['STATUS'] != null ? colMap['STATUS'] : colMap['ACTION']);
-      reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : colMap['NOTES']);
+      decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : null);
+      reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : (colMap['NOTES'] != null ? colMap['NOTES'] : colMap['EXACT SCREEN FAILURE / EXCEPTION']));
       p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
             : (colMap['P1'] != null ? colMap['P1']
             : (colMap['CURR P1'] != null ? colMap['CURR P1']
@@ -2673,12 +2836,22 @@ function syncMasterExcelWithHoldings() {
     // 3. Build live holdings sets from DATA.p1 and DATA.p2
     const heldP1 = {};
     (DATA.p1 || []).forEach(h => {
-      if (h && h.sym && Number(h.qty) > 0) heldP1[String(h.sym).trim().toUpperCase()] = Number(h.qty);
+      if (h && h.sym && Number(h.qty) > 0) {
+        const s = String(h.sym).trim().toUpperCase();
+        heldP1[s] = Number(h.qty);
+        const canon = getCanonicalSymbol(s);
+        if (canon) heldP1[canon] = Number(h.qty);
+      }
     });
 
     const heldP2 = {};
     (DATA.p2 || []).forEach(h => {
-      if (h && h.sym && Number(h.qty) > 0) heldP2[String(h.sym).trim().toUpperCase()] = Number(h.qty);
+      if (h && h.sym && Number(h.qty) > 0) {
+        const s = String(h.sym).trim().toUpperCase();
+        heldP2[s] = Number(h.qty);
+        const canon = getCanonicalSymbol(s);
+        if (canon) heldP2[canon] = Number(h.qty);
+      }
     });
 
     let soldCount = 0;
@@ -2689,13 +2862,17 @@ function syncMasterExcelWithHoldings() {
     for (let r = headerRowIdx + 1; r < rawRows.length; r++) {
       const row = rawRows[r];
       if (!row || !row.length) continue;
-      const sym = String(row[stockCol] || '').trim().toUpperCase();
+      let sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+      const p1Sym = p1CodeCol != null ? String(row[p1CodeCol] || '').trim().toUpperCase() : '';
+      const mSym = mCodeCol != null ? String(row[mCodeCol] || '').trim().toUpperCase() : '';
+      if (!sym) sym = p1Sym || mSym;
       if (!sym) continue;
+      const canon = getCanonicalSymbol(sym);
 
       const hadP1 = p1Col != null && isCellChecked(row[p1Col]);
       const hadP2 = p2Col != null && isCellChecked(row[p2Col]);
-      const nowP1 = !!heldP1[sym];
-      const nowP2 = !!heldP2[sym];
+      const nowP1 = !!(heldP1[sym] || (p1Sym && heldP1[p1Sym]) || (mSym && heldP1[mSym]) || (canon && heldP1[canon]));
+      const nowP2 = !!(heldP2[sym] || (p1Sym && heldP2[p1Sym]) || (mSym && heldP2[mSym]) || (canon && heldP2[canon]));
 
       // Update P1 indicator
       if (p1Col != null) {
@@ -2709,14 +2886,16 @@ function syncMasterExcelWithHoldings() {
         else if (!hadP2 && nowP2) { row[p2Col] = '✓'; addedCount++; }
       }
 
-      const isAnEtf = isEtf(sym);
+      const isAnEtf = isEtf(sym) || isEtf(p1Sym) || isEtf(mSym) || (canon && isEtf(canon));
 
       // Detect complete exit/sale: stock was in portfolio before, but now completely sold from both P1 and P2
       if ((hadP1 || hadP2) && !nowP1 && !nowP2) {
         if (!isAnEtf) {
+          if (statusCol != null) row[statusCol] = 'OUT';
           if (bucketCol != null) row[bucketCol] = 'OUT';
           if (decCol != null) row[decCol] = 'OUT';
         } else {
+          if (statusCol != null) row[statusCol] = 'ETF';
           if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() !== 'ETF') row[bucketCol] = 'ETF';
           if (decCol != null && String(row[decCol] || '').trim().toUpperCase() !== 'ETF') row[decCol] = 'ETF';
         }
@@ -2731,6 +2910,9 @@ function syncMasterExcelWithHoldings() {
       } else if (!hadP1 && !hadP2 && (nowP1 || nowP2)) {
         // Newly bought into portfolio: regular stocks marked IN, ETFs marked ETF
         if (!isAnEtf) {
+          if (statusCol != null && String(row[statusCol] || '').trim().toUpperCase() === 'OUT') {
+            row[statusCol] = 'IN';
+          }
           if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() === 'OUT') {
             row[bucketCol] = 'IN';
           }
@@ -2738,6 +2920,9 @@ function syncMasterExcelWithHoldings() {
             row[decCol] = 'IN';
           }
         } else {
+          if (statusCol != null && String(row[statusCol] || '').trim().toUpperCase() !== 'ETF') {
+            row[statusCol] = 'ETF';
+          }
           if (bucketCol != null && String(row[bucketCol] || '').trim().toUpperCase() !== 'ETF') {
             row[bucketCol] = 'ETF';
           }
@@ -2816,14 +3001,22 @@ function exportCurrentExcelSheet(format) {
   });
 
   const hasQ = colMap['Q'] != null || colMap['QUALITY'] != null || colMap['QLT'] != null;
-  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] : colMap['ETF']);
+  const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
+  const mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
+  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
+                 : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
+                 : (colMap['TICKER'] != null ? colMap['TICKER'] 
+                 : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
+                 : (colMap['CODE'] != null ? colMap['CODE'] 
+                 : (colMap['ETF'] != null ? colMap['ETF'] 
+                 : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
   const qltList = (DATA && DATA.screeners && Array.isArray(DATA.screeners.quality))
     ? DATA.screeners.quality.map(s => String(s || '').trim().toUpperCase())
     : [];
 
   let exportRows = [];
-  if (!hasQ && cCol != null && stockCol != null) {
+  if (!hasQ && cCol != null && (stockCol != null || p1CodeCol != null || mCodeCol != null)) {
     for (let r = 0; r < rawRows.length; r++) {
       const row = (rawRows[r] || []).slice();
       if (r < headerRowIdx) {
@@ -2832,8 +3025,12 @@ function exportCurrentExcelSheet(format) {
         row.splice(cCol + 1, 0, 'Q');
         exportRows.push(row);
       } else {
-        const sym = String(row[stockCol] || '').trim().toUpperCase();
-        const isQ = sym && qltList.indexOf(sym) > -1;
+        let sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+        const p1Sym = p1CodeCol != null ? String(row[p1CodeCol] || '').trim().toUpperCase() : '';
+        const mSym = mCodeCol != null ? String(row[mCodeCol] || '').trim().toUpperCase() : '';
+        if (!sym) sym = p1Sym || mSym;
+        const canon = getCanonicalSymbol(sym);
+        const isQ = (sym && qltList.indexOf(sym) > -1) || (canon && qltList.indexOf(canon) > -1);
         row.splice(cCol + 1, 0, isQ ? '✓' : '');
         exportRows.push(row);
       }
