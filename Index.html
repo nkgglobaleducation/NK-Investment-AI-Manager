@@ -874,15 +874,57 @@ function isEtf(sym){
   return /BEES$|ETF$/.test(s) || /^MON\d+/.test(s) || /^MONQ\d+/.test(s) || KNOWN_ETF_SYMBOLS.indexOf(s) > -1 || KNOWN_ETF_SYMBOLS.indexOf(canon) > -1;
 }
 
+function normalizeSymbol(s) {
+  if (!s) return '';
+  return String(s).trim().toUpperCase();
+}
+
+function getSymbolKeys(s) {
+  const sym = normalizeSymbol(s);
+  if (!sym) return [];
+  const clean = sym.replace(/[^A-Z0-9]/g, '');
+  const hyphen = sym.replace(/_/g, '-');
+  const under = sym.replace(/-/g, '_');
+  const space = sym.replace(/[-_]/g, ' ');
+  const set = new Set([sym]);
+  if (clean) set.add(clean);
+  if (hyphen) set.add(hyphen);
+  if (under) set.add(under);
+  if (space) set.add(space);
+  return Array.from(set);
+}
+
+function parseCandidateStatus(rawVal) {
+  if (!rawVal) return '';
+  const s = String(rawVal).trim().toUpperCase();
+  if (s === 'IN' || s === 'OUT' || s === 'ETF') return s;
+  if (/^(STRONG\s+IN|KEEP\s+IN|HIGH[- ]RISK\s+IN|BUY\s+IN|BUY\b|IN\b)/.test(s) || s.startsWith('IN ') || s.startsWith('IN —') || s.startsWith('IN -')) return 'IN';
+  if (/^(OUT\b|EXIT\b|SELL\b|DROPOUT\b|REPLACED\b|REPLACE\b)/.test(s) || s.startsWith('OUT ') || s.startsWith('OUT —') || s.startsWith('OUT -')) return 'OUT';
+  if (s.includes('ETF')) return 'ETF';
+  return '';
+}
+
 function getMasterSheetInOutMap() {
   const map = {};
   const me = DATA && DATA.masterExcel;
   if (!me || !me.sheets) return map;
 
   const sheetNames = me.sheetNames || Object.keys(me.sheets);
-  sheetNames.forEach(sName => {
+
+  // Sort sheets so primary master candidate sheets are processed first
+  const sortedSheets = sheetNames.slice().sort((a, b) => {
+    const aRows = (me.sheets[a] || []).length;
+    const bRows = (me.sheets[b] || []).length;
+    const aUpper = a.toUpperCase();
+    const bUpper = b.toUpperCase();
+    const aScore = (aUpper.includes('MASTER') || aUpper.includes('IN_OUT') || aUpper === 'IN' || aUpper === 'OUT' ? 100 : 0) + aRows;
+    const bScore = (bUpper.includes('MASTER') || bUpper.includes('IN_OUT') || bUpper === 'IN' || bUpper === 'OUT' ? 100 : 0) + bRows;
+    return bScore - aScore;
+  });
+
+  sortedSheets.forEach(sName => {
     const rows = me.sheets[sName] || [];
-    if (!rows || !rows.length) return;
+    if (!rows || rows.length < 2) return;
 
     let headerRowIdx = -1;
     for (let r = 0; r < Math.min(rows.length, 10); r++) {
@@ -1606,6 +1648,7 @@ function showTab(t){
   document.getElementById('tab-excel').classList.toggle('hidden', t!=='excel');
   document.getElementById('tab-mafang')?.classList.toggle('hidden', t!=='mafang');
   document.getElementById('tab-settings').classList.toggle('hidden', t!=='settings');
+  if (t === 'dash') rebuild();
   if (t === 'dropouts') renderDropouts();
   if (t === 'excel') renderMasterExcel();
   if (t === 'mafang') renderMafangTab();
@@ -1947,7 +1990,121 @@ function clearExcelSearch() {
 function isCellChecked(val) {
   if (val == null) return false;
   const s = String(val).trim().toLowerCase();
-  return s !== '' && s !== '-' && s !== '—' && s !== '0' && s !== 'false' && s !== 'null' && s !== 'no';
+  return s !== '' && s !== '-' && s !== '—' && s !== '&#8212;' && s !== '0' && s !== 'false' && s !== 'null' && s !== 'no';
+}
+
+function findExcelCol(map, keys, allowPrefix) {
+  if (!map) return null;
+  for (let k of keys) {
+    if (map[k] != null) return map[k];
+  }
+  if (allowPrefix) {
+    for (let h in map) {
+      for (let k of keys) {
+        if (h.startsWith(k)) return map[h];
+      }
+    }
+  }
+  return null;
+}
+
+function isStockHeaderExcluded(h) {
+  if (!h) return true;
+  const upper = h.toUpperCase();
+  const badWords = [
+    'NOTE', 'REASON', 'DESC', 'MISMATCH', 'MAPPING', 'COMMENT', 'REMARK',
+    'EXPLANATION', 'FAILURE', 'EXCEPTION', 'ANALYSIS', 'STATUS', 'DECISION',
+    'SECTOR', 'NAME', 'VALUE', 'PRICE', 'ALLOCATION', 'WEIGHT', 'CAP', 'PE'
+  ];
+  return badWords.some(w => upper.includes(w));
+}
+
+function scoreStockHeader(h) {
+  if (isStockHeaderExcluded(h)) return -100;
+  const upper = h.toUpperCase();
+  if (upper.includes('MASTER') && upper.includes('CODE')) return 100;
+  if (upper.includes('SCREENER') && upper.includes('CODE')) return 95;
+  if (upper.includes('P1') && upper.includes('CODE')) return 90;
+  if (upper.includes('PORTFOLIO') && upper.includes('CODE')) return 85;
+  if (upper === 'STOCK' || upper === 'SYMBOL' || upper === 'TICKER') return 80;
+  if (upper.startsWith('STOCK') || upper.startsWith('SYMBOL') || upper.startsWith('TICKER')) return 75;
+  if (upper.includes('NSE') && upper.includes('CODE')) return 70;
+  if (upper.includes('BSE') && upper.includes('CODE')) return 70;
+  if (upper.includes('CODE') || upper.includes('TICKER') || upper.includes('SYMBOL')) return 60;
+  if (upper === 'INSTRUMENT') return 50;
+  return 0;
+}
+
+function findExcelStockCol(map) {
+  let bestIdx = null;
+  let bestScore = 0;
+  for (let h in map) {
+    const score = scoreStockHeader(h);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = map[h];
+    }
+  }
+  return bestIdx;
+}
+
+function findExcelStockFallbackCol(map, excludeCol) {
+  let bestIdx = null;
+  let bestScore = 0;
+  for (let h in map) {
+    if (excludeCol != null && map[h] === excludeCol) continue;
+    const score = scoreStockHeader(h);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = map[h];
+    }
+  }
+  return bestIdx;
+}
+
+function findExcelHoldingCol(map, portKey) {
+  if (!map) return null;
+  const p = String(portKey || 'P1').toUpperCase();
+  const explicit = [
+    'CURRENT ' + p + ' VALUE (₹)',
+    'CURRENT ' + p + ' VALUE',
+    'CURRENT ' + p,
+    'CURR ' + p,
+    p + ' HOLDING',
+    p + ' VALUE',
+    p
+  ];
+  for (let k of explicit) {
+    if (map[k] != null) return map[k];
+  }
+  for (let h in map) {
+    if (h.startsWith('CURRENT ' + p) || h.startsWith('CURR ' + p) || h === p) {
+      if (!h.includes('CODE') && !h.includes('SYMBOL') && !h.includes('TICKER')) {
+        return map[h];
+      }
+    }
+  }
+  return null;
+}
+
+function isValidStockSymbol(s) {
+  if (!s) return false;
+  const sym = String(s).trim();
+  if (sym.length < 1 || sym.length > 25) return false;
+  if (sym.indexOf(' ') > -1 && sym.length > 15) return false;
+  if (/^(NO|YES|TRUE|FALSE|NULL|NONE|N\/A|NA|—|-)$/i.test(sym)) return false;
+  return true;
+}
+
+function getRowStockSymbol(row, stockCol, fallbackCol) {
+  if (!row) return '';
+  let sym = stockCol != null ? String(row[stockCol] || '').trim().toUpperCase() : '';
+  if (!isValidStockSymbol(sym)) sym = '';
+  if (!sym && fallbackCol != null) {
+    const fSym = String(row[fallbackCol] || '').trim().toUpperCase();
+    if (isValidStockSymbol(fSym)) sym = fSym;
+  }
+  return sym;
 }
 
 function escapeHtml(s){
@@ -2340,14 +2497,14 @@ function renderCurrentSheetTable() {
     const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
     const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
 
-    let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
-    let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
+    let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || inP1Holdings;
+    let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || inP2Holdings;
 
     if (isP1 && isP2) {
-      if (bVal === 'P1' || hasP1Col) isP2 = false;
-      else if (bVal === 'P2' || hasP2Col) isP1 = false;
-      else if (portVal === 'P1') isP2 = false;
-      else if (portVal === 'P2') isP1 = false;
+      if (bVal === 'P1' && !hasP2Col) isP2 = false;
+      else if (bVal === 'P2' && !hasP1Col) isP1 = false;
+      else if (portVal === 'P1' && !hasP2Col) isP2 = false;
+      else if (portVal === 'P2' && !hasP1Col) isP1 = false;
     }
 
     const isNonPort = !isP1 && !isP2;
@@ -2418,8 +2575,8 @@ function renderCurrentSheetTable() {
   if (excelSortCol != null) {
     dataRows.sort((a, b) => {
       if (excelSortCol === -999) {
-        const symA = stockCol != null ? String(a[stockCol] || '').trim().toUpperCase() : '';
-        const symB = stockCol != null ? String(b[stockCol] || '').trim().toUpperCase() : '';
+        const symA = getRowStockSymbol(a, stockCol, stockFallbackCol);
+        const symB = getRowStockSymbol(b, stockCol, stockFallbackCol);
         const qValA = qualCol != null ? String(a[qualCol] || '').trim().toUpperCase() : '';
         const qValB = qualCol != null ? String(b[qualCol] || '').trim().toUpperCase() : '';
         const isQA = (qltCol != null && isCellChecked(a[qltCol])) || qValA.indexOf('Q') > -1 || (symA && qltList.indexOf(symA) > -1);
@@ -2445,8 +2602,9 @@ function renderCurrentSheetTable() {
     const row = dataRows[r] || [];
 
     const nonBlankCells = row.filter(c => String(c != null ? c : '').trim() !== '');
-    if (nonBlankCells.length > 0 && (nonBlankCells[0] === 'Combined Sector Allocation' || nonBlankCells[0].indexOf('Sector Allocation') > -1)) {
-      trHtml += '<tr style="background:#f1f5f9;border-top:2px solid #cbd5e1;font-weight:700;color:var(--navy)"><td colspan="' + renderedColumns.length + '" style="padding:8px 10px;font-size:12px">📊 ' + escapeHtml(nonBlankCells[0]) + '</td></tr>';
+    const firstCellText = nonBlankCells.length > 0 ? String(nonBlankCells[0] != null ? nonBlankCells[0] : '').trim() : '';
+    if (firstCellText && (firstCellText === 'Combined Sector Allocation' || firstCellText.indexOf('Sector Allocation') > -1)) {
+      trHtml += '<tr style="background:#f1f5f9;border-top:2px solid #cbd5e1;font-weight:700;color:var(--navy)"><td colspan="' + renderedColumns.length + '" style="padding:8px 10px;font-size:12px">📊 ' + escapeHtml(firstCellText) + '</td></tr>';
       continue;
     }
 
@@ -2482,14 +2640,14 @@ function renderCurrentSheetTable() {
     const inP1Holdings = (DATA && Array.isArray(DATA.p1)) ? DATA.p1.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
     const inP2Holdings = (DATA && Array.isArray(DATA.p2)) ? DATA.p2.some(h => h && h.sym && (String(h.sym).trim().toUpperCase() === sym || String(h.sym).trim().toUpperCase() === canon) && Number(h.qty) > 0) : false;
 
-    let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || (!hasP2Col && bVal !== 'P2' && portVal !== 'P2' && inP1Holdings);
-    let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || (!hasP1Col && bVal !== 'P1' && portVal !== 'P1' && inP2Holdings);
+    let isP1 = hasP1Col || bVal === 'P1' || portVal === 'P1' || inP1Holdings;
+    let isP2 = hasP2Col || bVal === 'P2' || portVal === 'P2' || inP2Holdings;
 
     if (isP1 && isP2) {
-      if (bVal === 'P1' || hasP1Col) isP2 = false;
-      else if (bVal === 'P2' || hasP2Col) isP1 = false;
-      else if (portVal === 'P1') isP2 = false;
-      else if (portVal === 'P2') isP1 = false;
+      if (bVal === 'P1' && !hasP2Col) isP2 = false;
+      else if (bVal === 'P2' && !hasP1Col) isP1 = false;
+      else if (portVal === 'P1' && !hasP2Col) isP2 = false;
+      else if (portVal === 'P2' && !hasP1Col) isP1 = false;
     }
 
     const isNonPort = !isP1 && !isP2;
@@ -2539,11 +2697,16 @@ function renderCurrentSheetTable() {
         } else {
           cellDisplay = '<span style="color:#cbd5e1">—</span>';
         }
-      } else if (['CURRENT P1', 'CURRENT P2', 'CURR P1', 'CURR P2'].indexOf(colName) > -1) {
+      } else if (['CURRENT P1', 'CURRENT P2', 'CURR P1', 'CURR P2'].indexOf(colName) > -1 || colName.startsWith('CURRENT P') || colName.startsWith('CURR P')) {
         alignClass = '';
         alignStyle = 'text-align:center;width:65px;';
         if (isCellChecked(val)) {
-          cellDisplay = '<span class="badge b-buy" style="font-size:10px;padding:2px 8px;font-weight:700">✓</span>';
+          const num = parseFloat(String(val).replace(/[₹,]/g, '').trim());
+          if (!isNaN(num) && num > 0) {
+            cellDisplay = '<span style="color:var(--navy);font-weight:700;font-size:11px">₹' + num.toLocaleString('en-IN') + '</span>';
+          } else {
+            cellDisplay = '<span class="badge b-buy" style="font-size:10px;padding:2px 8px;font-weight:700">✓</span>';
+          }
         } else {
           cellDisplay = '<span style="color:#cbd5e1">—</span>';
         }
