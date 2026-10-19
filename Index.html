@@ -904,6 +904,64 @@ function parseCandidateStatus(rawVal) {
   return '';
 }
 
+function findMasterTickerCols(colMap) {
+  let p1Col = null, mCol = null, stockCol = null;
+  const keys = Object.keys(colMap || {});
+  
+  const isExcluded = (upper) => {
+    return upper.includes('NOTE') || upper.includes('REASON') || upper.includes('VALUE') || 
+           upper.includes('PRICE') || upper.includes('DESC') || upper.includes('EXPLANATION') ||
+           upper.includes('MISMATCH') || upper.includes('COMMENT') || upper.includes('REMARK') ||
+           upper.includes('NAME') || upper.includes('SECTOR') || upper.includes('PRESENT');
+  };
+
+  keys.forEach(k => {
+    const upper = k.toUpperCase().trim();
+    if (isExcluded(upper)) return;
+    if (upper.includes('P1') && upper.includes('CODE')) {
+      if (p1Col == null) p1Col = colMap[k];
+    }
+    if ((upper.includes('MASTER') || upper.includes('SCREENER')) && upper.includes('CODE')) {
+      if (mCol == null) mCol = colMap[k];
+    }
+    if (upper === 'STOCK' || upper === 'SYMBOL' || upper === 'TICKER' || upper === 'INSTRUMENT' ||
+        upper.startsWith('STOCK') || upper.startsWith('SYMBOL') || upper.startsWith('TICKER')) {
+      if (stockCol == null) stockCol = colMap[k];
+    }
+  });
+
+  if (stockCol == null) {
+    if (colMap['CODE'] != null) stockCol = colMap['CODE'];
+    else if (colMap['ETF'] != null) stockCol = colMap['ETF'];
+    else if (p1Col != null) stockCol = p1Col;
+    else if (mCol != null) stockCol = mCol;
+  }
+  if (p1Col == null && stockCol != null) p1Col = stockCol;
+  if (mCol == null && stockCol != null) mCol = stockCol;
+
+  return { p1Col: p1Col, mCol: mCol, stockCol: stockCol };
+}
+
+function findMasterStatusAndDecisionCols(colMap) {
+  let statusCol = null, decCol = null, bucketCol = null;
+  const keys = Object.keys(colMap || {});
+  keys.forEach(k => {
+    const upper = k.toUpperCase().trim();
+    if (upper === 'STATUS' || upper.startsWith('STATUS') || upper.includes('IN/OUT') || upper.includes('IN / OUT') || upper.includes('CANDIDATE')) {
+      if (statusCol == null) statusCol = colMap[k];
+    }
+    if (upper.includes('DECISION') || upper === 'ACTION' || upper === 'RECOMMENDATION' || upper === 'REMARK') {
+      if (decCol == null) decCol = colMap[k];
+    }
+    if (upper === 'BUCKET' || upper === 'PORT' || upper === 'PORTFOLIO' || upper.includes('LATEST PORT')) {
+      if (bucketCol == null) bucketCol = colMap[k];
+    }
+  });
+  if (decCol == null && statusCol != null) decCol = statusCol;
+  if (statusCol == null && decCol != null) statusCol = decCol;
+  return { statusCol: statusCol, decCol: decCol, bucketCol: bucketCol };
+}
+
 function getMasterSheetInOutMap() {
   const map = {};
   const me = DATA && DATA.masterExcel;
@@ -941,28 +999,16 @@ function getMasterSheetInOutMap() {
       if (n) colMap[n] = i;
     });
 
-    const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
-                    : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
-                    : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
-                    : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
-                    : (colMap['STATE'] != null ? colMap['STATE'] : null))));
-    const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-    const decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
-                 : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
-                 : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
-                 : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
-                 : (colMap['ACTION'] != null ? colMap['ACTION'] 
-                 : (colMap['STATUS'] != null ? colMap['STATUS'] : null)))));
+    const tCols = findMasterTickerCols(colMap);
+    const sCols = findMasterStatusAndDecisionCols(colMap);
 
-    const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
-    const mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
-    const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
-                   : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
-                   : (colMap['TICKER'] != null ? colMap['TICKER'] 
-                   : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
-                   : (colMap['CODE'] != null ? colMap['CODE'] 
-                   : (colMap['ETF'] != null ? colMap['ETF'] 
-                   : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
+    const statusCol = sCols.statusCol;
+    const bucketCol = sCols.bucketCol;
+    const decCol = sCols.decCol;
+
+    const p1CodeCol = tCols.p1Col;
+    const mCodeCol = tCols.mCol;
+    const stockCol = tCols.stockCol;
 
     if (stockCol == null && p1CodeCol == null && mCodeCol == null) return;
 
@@ -2427,32 +2473,21 @@ function renderCurrentSheetTable() {
     if (name) colMap[name] = i;
   });
 
-  const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
-                  : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
-                  : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
-                  : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
-                  : (colMap['STATE'] != null ? colMap['STATE'] : null))));
-  const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-  const portCol = colMap['LATEST PORT'] != null ? colMap['LATEST PORT'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['BUCKET']);
-  const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
-  const mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
-  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
-                 : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
-                 : (colMap['TICKER'] != null ? colMap['TICKER'] 
-                 : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
-                 : (colMap['CODE'] != null ? colMap['CODE'] 
-                 : (colMap['ETF'] != null ? colMap['ETF'] 
-                 : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
+  const tCols = findMasterTickerCols(colMap);
+  const sCols = findMasterStatusAndDecisionCols(colMap);
+
+  const statusCol = sCols.statusCol;
+  const bucketCol = sCols.bucketCol;
+  const portCol = sCols.bucketCol;
+  const p1CodeCol = tCols.p1Col;
+  const mCodeCol = tCols.mCol;
+  const stockCol = tCols.stockCol;
+  const stockFallbackCol = (p1CodeCol !== stockCol) ? p1CodeCol : mCodeCol;
 
   const qualCol = colMap['QUALIFICATION'] != null ? colMap['QUALIFICATION'] : colMap['QUAL'];
   const eCol = colMap['E'] != null ? colMap['E'] : (colMap['ELIGIBILITY'] != null ? colMap['ELIGIBILITY'] : (colMap['EARNINGS'] != null ? colMap['EARNINGS'] : null));
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
-  const decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
-               : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
-               : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
-               : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
-               : (colMap['ACTION'] != null ? colMap['ACTION'] 
-               : (colMap['STATUS'] != null ? colMap['STATUS'] : null)))));
+  const decCol = sCols.decCol;
 
   const sheetUpper = String(currentExcelSheetName || '').trim().toUpperCase();
   const isCombinedInOut = sheetUpper.includes('IN_OUT') || sheetUpper.includes('IN-OUT') || sheetUpper.includes('IN/OUT') || sheetUpper.includes('IN AND OUT');
@@ -2963,27 +2998,15 @@ function syncMasterExcelWithHoldings() {
       if (n) colMap[n] = i;
     });
 
-    let statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
-                  : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
-                  : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
-                  : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
-                  : (colMap['STATE'] != null ? colMap['STATE'] : null))));
-    let p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
-    let mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
-    let stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
-                   : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
-                   : (colMap['TICKER'] != null ? colMap['TICKER'] 
-                   : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
-                   : (colMap['CODE'] != null ? colMap['CODE'] 
-                   : (colMap['ETF'] != null ? colMap['ETF'] 
-                   : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
+    const tCols = findMasterTickerCols(colMap);
+    const sCols = findMasterStatusAndDecisionCols(colMap);
+    let statusCol = sCols.statusCol;
+    let bucketCol = sCols.bucketCol;
+    let decCol = sCols.decCol;
+    let p1CodeCol = tCols.p1Col;
+    let mCodeCol = tCols.mCol;
+    let stockCol = tCols.stockCol;
 
-    let bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-    let decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
-                 : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
-                 : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
-                 : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
-                 : (colMap['ACTION'] != null ? colMap['ACTION'] : null))));
     let reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : (colMap['NOTES'] != null ? colMap['NOTES'] : colMap['EXACT SCREEN FAILURE / EXCEPTION']));
 
     let p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
@@ -3030,26 +3053,15 @@ function syncMasterExcelWithHoldings() {
         const n = String(h || '').trim().toUpperCase();
         if (n) colMap[n] = i;
       });
-      statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
-                    : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
-                    : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
-                    : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
-                    : (colMap['STATE'] != null ? colMap['STATE'] : null))));
-      p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
-      mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
-      stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
-                     : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
-                     : (colMap['TICKER'] != null ? colMap['TICKER'] 
-                     : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
-                     : (colMap['CODE'] != null ? colMap['CODE'] 
-                     : (colMap['ETF'] != null ? colMap['ETF'] 
-                     : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
-      bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-      decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
-                   : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
-                   : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
-                   : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
-                   : (colMap['ACTION'] != null ? colMap['ACTION'] : null))));
+      const tCols2 = findMasterTickerCols(colMap);
+      const sCols2 = findMasterStatusAndDecisionCols(colMap);
+      statusCol = sCols2.statusCol;
+      bucketCol = sCols2.bucketCol;
+      decCol = sCols2.decCol;
+      p1CodeCol = tCols2.p1Col;
+      mCodeCol = tCols2.mCol;
+      stockCol = tCols2.stockCol;
+
       reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : (colMap['NOTES'] != null ? colMap['NOTES'] : colMap['EXACT SCREEN FAILURE / EXCEPTION']));
       p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
             : (colMap['P1'] != null ? colMap['P1']
@@ -3135,7 +3147,7 @@ function syncMasterExcelWithHoldings() {
         }
         soldCount++;
         soldSymbols.push(sym);
-      } else if (!hadP1 && !hadP2 && (nowP1 || nowP2)) {
+      } else if ((p1Col != null || p2Col != null) && !hadP1 && !hadP2 && (nowP1 || nowP2)) {
         // Newly bought into portfolio: regular stocks marked IN, ETFs marked ETF
         if (!isAnEtf) {
           if (statusCol != null && String(row[statusCol] || '').trim().toUpperCase() === 'OUT') {
@@ -3229,15 +3241,10 @@ function exportCurrentExcelSheet(format) {
   });
 
   const hasQ = colMap['Q'] != null || colMap['QUALITY'] != null || colMap['QLT'] != null;
-  const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
-  const mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
-  const stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
-                 : (colMap['SYMBOL'] != null ? colMap['SYMBOL'] 
-                 : (colMap['TICKER'] != null ? colMap['TICKER'] 
-                 : (colMap['INSTRUMENT'] != null ? colMap['INSTRUMENT'] 
-                 : (colMap['CODE'] != null ? colMap['CODE'] 
-                 : (colMap['ETF'] != null ? colMap['ETF'] 
-                 : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
+  const tCols = findMasterTickerCols(colMap);
+  const p1CodeCol = tCols.p1Col;
+  const mCodeCol = tCols.mCol;
+  const stockCol = tCols.stockCol;
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
   const qltList = (DATA && DATA.screeners && Array.isArray(DATA.screeners.quality))
     ? DATA.screeners.quality.map(s => String(s || '').trim().toUpperCase())
