@@ -941,9 +941,18 @@ function getMasterSheetInOutMap() {
       if (n) colMap[n] = i;
     });
 
-    const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
+    const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
+                    : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
+                    : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
+                    : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
+                    : (colMap['STATE'] != null ? colMap['STATE'] : null))));
     const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-    const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : colMap['STATUS']);
+    const decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
+                 : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
+                 : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
+                 : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
+                 : (colMap['ACTION'] != null ? colMap['ACTION'] 
+                 : (colMap['STATUS'] != null ? colMap['STATUS'] : null)))));
 
     const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
     const mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
@@ -958,8 +967,9 @@ function getMasterSheetInOutMap() {
     if (stockCol == null && p1CodeCol == null && mCodeCol == null) return;
 
     const sheetUpper = String(sName).trim().toUpperCase();
-    const isSheetIN = sheetUpper === 'IN' || sheetUpper.startsWith('IN ') || sheetUpper.startsWith('IN_') || sheetUpper.startsWith('IN-');
-    const isSheetOUT = sheetUpper === 'OUT' || sheetUpper.startsWith('OUT ') || sheetUpper.startsWith('OUT_') || sheetUpper.startsWith('OUT-');
+    const isCombinedInOut = sheetUpper.includes('IN_OUT') || sheetUpper.includes('IN-OUT') || sheetUpper.includes('IN/OUT') || sheetUpper.includes('IN AND OUT');
+    const isSheetIN = !isCombinedInOut && (sheetUpper === 'IN' || sheetUpper.startsWith('IN ') || sheetUpper.startsWith('IN_') || sheetUpper.startsWith('IN-'));
+    const isSheetOUT = !isCombinedInOut && (sheetUpper === 'OUT' || sheetUpper.startsWith('OUT ') || sheetUpper.startsWith('OUT_') || sheetUpper.startsWith('OUT-'));
 
     for (let r = headerRowIdx + 1; r < rows.length; r++) {
       const row = rows[r];
@@ -1004,15 +1014,19 @@ function getMasterSheetInOutMap() {
       }
 
       syms.forEach(sym => {
-        if (isEtf(sym)) {
-          map[sym] = 'ETF';
-        } else if (val) {
-          map[sym] = val;
+        const targetVal = isEtf(sym) ? 'ETF' : val;
+        if (targetVal) {
+          map[sym] = targetVal;
+          getSymbolKeys(sym).forEach(k => { map[k] = targetVal; });
         }
         // Bidirectional mapping for aliases
-        const alias = SYMBOL_ALIASES[sym];
-        if (alias && !map[alias]) {
-          map[alias] = isEtf(alias) ? 'ETF' : val;
+        const canon = getCanonicalSymbol(sym);
+        if (canon) {
+          const cVal = isEtf(canon) ? 'ETF' : val;
+          if (cVal) {
+            map[canon] = cVal;
+            getSymbolKeys(canon).forEach(k => { map[k] = cVal; });
+          }
         }
       });
     }
@@ -1067,7 +1081,24 @@ function makeRow(h, port, inOutMap){
   const etf = isEtf(h.sym) || (canon && isEtf(canon));
 
   // Master Sheet Candidate determination: ETFs are treated as ETF candidates, not IN/OUT
-  const inOut = etf ? 'ETF' : ((inOutMap && (inOutMap[h.sym] || (canon && inOutMap[canon]))) || '');
+  let inOut = '';
+  if (etf) {
+    inOut = 'ETF';
+  } else if (inOutMap) {
+    inOut = inOutMap[h.sym] || (canon && inOutMap[canon]) || '';
+    if (!inOut) {
+      const keys = getSymbolKeys(h.sym);
+      for (let ki = 0; ki < keys.length; ki++) {
+        if (inOutMap[keys[ki]]) { inOut = inOutMap[keys[ki]]; break; }
+      }
+    }
+    if (!inOut && canon) {
+      const cKeys = getSymbolKeys(canon);
+      for (let ki = 0; ki < cKeys.length; ki++) {
+        if (inOutMap[cKeys[ki]]) { inOut = inOutMap[cKeys[ki]]; break; }
+      }
+    }
+  }
   const scrs = DATA.screeners || {};
   const inCmp = (scrs.compounder && (scrs.compounder.indexOf(h.sym) > -1 || (canon && scrs.compounder.indexOf(canon) > -1))) || false;
   const inQlt = (scrs.quality && (scrs.quality.indexOf(h.sym) > -1 || (canon && scrs.quality.indexOf(canon) > -1))) || false;
@@ -2396,7 +2427,11 @@ function renderCurrentSheetTable() {
     if (name) colMap[name] = i;
   });
 
-  const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
+  const statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
+                  : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
+                  : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
+                  : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
+                  : (colMap['STATE'] != null ? colMap['STATE'] : null))));
   const bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
   const portCol = colMap['LATEST PORT'] != null ? colMap['LATEST PORT'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['BUCKET']);
   const p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
@@ -2412,7 +2447,17 @@ function renderCurrentSheetTable() {
   const qualCol = colMap['QUALIFICATION'] != null ? colMap['QUALIFICATION'] : colMap['QUAL'];
   const eCol = colMap['E'] != null ? colMap['E'] : (colMap['ELIGIBILITY'] != null ? colMap['ELIGIBILITY'] : (colMap['EARNINGS'] != null ? colMap['EARNINGS'] : null));
   const cCol = colMap['C'] != null ? colMap['C'] : colMap['CMP'];
-  const decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : colMap['STATUS']);
+  const decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
+               : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
+               : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
+               : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
+               : (colMap['ACTION'] != null ? colMap['ACTION'] 
+               : (colMap['STATUS'] != null ? colMap['STATUS'] : null)))));
+
+  const sheetUpper = String(currentExcelSheetName || '').trim().toUpperCase();
+  const isCombinedInOut = sheetUpper.includes('IN_OUT') || sheetUpper.includes('IN-OUT') || sheetUpper.includes('IN/OUT') || sheetUpper.includes('IN AND OUT');
+  const isSheetIN = !isCombinedInOut && (sheetUpper === 'IN' || sheetUpper.startsWith('IN ') || sheetUpper.startsWith('IN_') || sheetUpper.startsWith('IN-'));
+  const isSheetOUT = !isCombinedInOut && (sheetUpper === 'OUT' || sheetUpper.startsWith('OUT ') || sheetUpper.startsWith('OUT_') || sheetUpper.startsWith('OUT-'));
 
   const p1Col = colMap['P1'] != null ? colMap['P1']
               : (colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
@@ -2482,13 +2527,15 @@ function renderCurrentSheetTable() {
       statusVal === 'IN' || bVal === 'IN' || decVal === 'IN' ||
       statusVal.startsWith('IN') || bVal.startsWith('IN') || decVal.startsWith('IN') ||
       decVal.indexOf('STRONG IN') > -1 || decVal.indexOf('KEEP IN') > -1 || decVal.indexOf('IN —') > -1 ||
-      decVal.indexOf('IN -') > -1 || decVal.indexOf('HIGH-RISK IN') > -1
+      decVal.indexOf('IN -') > -1 || decVal.indexOf('HIGH-RISK IN') > -1 ||
+      isSheetIN
     );
     const isOUT = !isAnETF && !isIN && (
       statusVal === 'OUT' || bVal === 'OUT' || decVal === 'OUT' ||
       statusVal.startsWith('OUT') || bVal.startsWith('OUT') || decVal.startsWith('OUT') ||
       decVal.indexOf('EXIT') > -1 || decVal.indexOf('REPLACED') > -1 || decVal.indexOf('REDUCTION') > -1 ||
-      decVal.indexOf('FAILURE') > -1
+      decVal.indexOf('FAILURE') > -1 ||
+      isSheetOUT
     );
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
@@ -2625,13 +2672,15 @@ function renderCurrentSheetTable() {
       statusVal === 'IN' || bVal === 'IN' || decVal === 'IN' ||
       statusVal.startsWith('IN') || bVal.startsWith('IN') || decVal.startsWith('IN') ||
       decVal.indexOf('STRONG IN') > -1 || decVal.indexOf('KEEP IN') > -1 || decVal.indexOf('IN —') > -1 ||
-      decVal.indexOf('IN -') > -1 || decVal.indexOf('HIGH-RISK IN') > -1
+      decVal.indexOf('IN -') > -1 || decVal.indexOf('HIGH-RISK IN') > -1 ||
+      isSheetIN
     );
     const isOUT = !isAnETF && !isIN && (
       statusVal === 'OUT' || bVal === 'OUT' || decVal === 'OUT' ||
       statusVal.startsWith('OUT') || bVal.startsWith('OUT') || decVal.startsWith('OUT') ||
       decVal.indexOf('EXIT') > -1 || decVal.indexOf('REPLACED') > -1 || decVal.indexOf('REDUCTION') > -1 ||
-      decVal.indexOf('FAILURE') > -1
+      decVal.indexOf('FAILURE') > -1 ||
+      isSheetOUT
     );
 
     const hasP1Col = p1Col != null && isCellChecked(row[p1Col]);
@@ -2710,7 +2759,7 @@ function renderCurrentSheetTable() {
         } else {
           cellDisplay = '<span style="color:#cbd5e1">—</span>';
         }
-      } else if (colName === 'STATUS' || colName === 'BUCKET' || colName === 'LATEST PORT') {
+      } else if (colName === 'STATUS' || colName === 'IN/OUT' || colName === 'IN / OUT' || colName === 'BUCKET' || colName === 'LATEST PORT') {
         alignClass = '';
         alignStyle = 'text-align:center;width:60px;';
         const u = val.toUpperCase();
@@ -2720,7 +2769,7 @@ function renderCurrentSheetTable() {
         else if (u === 'IN' || u.startsWith('IN')) cellDisplay = '<span class="badge b-buy" style="font-weight:700">IN</span>';
         else if (u === 'OUT' || u.startsWith('OUT')) cellDisplay = '<span class="badge b-exit" style="font-weight:700">OUT</span>';
         else if (u === '—' || u === '-' || !u) cellDisplay = '<span style="color:#cbd5e1">—</span>';
-      } else if (colName === 'DECISION') {
+      } else if (colName === 'DECISION' || colName.indexOf('DECISION') > -1) {
         alignClass = '';
         alignStyle = 'text-align:center;width:95px;font-size:11px;';
         const u = val.toUpperCase();
@@ -2914,7 +2963,11 @@ function syncMasterExcelWithHoldings() {
       if (n) colMap[n] = i;
     });
 
-    let statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
+    let statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
+                  : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
+                  : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
+                  : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
+                  : (colMap['STATE'] != null ? colMap['STATE'] : null))));
     let p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
     let mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
     let stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
@@ -2926,7 +2979,11 @@ function syncMasterExcelWithHoldings() {
                    : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
 
     let bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-    let decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : null);
+    let decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
+                 : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
+                 : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
+                 : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
+                 : (colMap['ACTION'] != null ? colMap['ACTION'] : null))));
     let reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : (colMap['NOTES'] != null ? colMap['NOTES'] : colMap['EXACT SCREEN FAILURE / EXCEPTION']));
 
     let p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
@@ -2973,7 +3030,11 @@ function syncMasterExcelWithHoldings() {
         const n = String(h || '').trim().toUpperCase();
         if (n) colMap[n] = i;
       });
-      statusCol = colMap['STATUS'] != null ? colMap['STATUS'] : (colMap['STATE'] != null ? colMap['STATE'] : null);
+      statusCol = colMap['STATUS'] != null ? colMap['STATUS'] 
+                    : (colMap['IN/OUT'] != null ? colMap['IN/OUT'] 
+                    : (colMap['IN / OUT'] != null ? colMap['IN / OUT'] 
+                    : (colMap['CANDIDATE STATUS'] != null ? colMap['CANDIDATE STATUS'] 
+                    : (colMap['STATE'] != null ? colMap['STATE'] : null))));
       p1CodeCol = colMap['P1 PORTFOLIO CODE'] != null ? colMap['P1 PORTFOLIO CODE'] : (colMap['PORTFOLIO CODE'] != null ? colMap['PORTFOLIO CODE'] : (colMap['P1 CODE'] != null ? colMap['P1 CODE'] : null));
       mCodeCol = colMap['MASTER/SCREENER CODE'] != null ? colMap['MASTER/SCREENER CODE'] : (colMap['MASTER CODE'] != null ? colMap['MASTER CODE'] : (colMap['SCREENER CODE'] != null ? colMap['SCREENER CODE'] : null));
       stockCol = colMap['STOCK'] != null ? colMap['STOCK'] 
@@ -2984,7 +3045,11 @@ function syncMasterExcelWithHoldings() {
                      : (colMap['ETF'] != null ? colMap['ETF'] 
                      : (p1CodeCol != null ? p1CodeCol : mCodeCol))))));
       bucketCol = colMap['BUCKET'] != null ? colMap['BUCKET'] : (colMap['PORT'] != null ? colMap['PORT'] : colMap['LATEST PORT']);
-      decCol = colMap['DECISION'] != null ? colMap['DECISION'] : (colMap['ACTION'] != null ? colMap['ACTION'] : null);
+      decCol = colMap['DECISION'] != null ? colMap['DECISION'] 
+                   : (colMap['IN DECISION'] != null ? colMap['IN DECISION'] 
+                   : (colMap['OUT DECISION'] != null ? colMap['OUT DECISION'] 
+                   : (colMap['FINAL DECISION'] != null ? colMap['FINAL DECISION'] 
+                   : (colMap['ACTION'] != null ? colMap['ACTION'] : null))));
       reasonCol = colMap['REASON'] != null ? colMap['REASON'] : (colMap['DESCRIPTION'] != null ? colMap['DESCRIPTION'] : (colMap['NOTES'] != null ? colMap['NOTES'] : colMap['EXACT SCREEN FAILURE / EXCEPTION']));
       p1Col = colMap['CURRENT P1'] != null ? colMap['CURRENT P1']
             : (colMap['P1'] != null ? colMap['P1']
