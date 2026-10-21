@@ -1874,59 +1874,18 @@ function renderMafangTab() {
 function updateMafangLivePortal() {
   const ist = new Date(Date.now() + (new Date().getTimezoneOffset() * 60000) + (3600000 * 5.5));
   const day = ist.getDay();
-  const timeNum = ist.getHours() * 100 + ist.getMinutes();
 
-  let phaseText = 'Market Closed (Weekend)';
-  let dotColor = '#5f6368';
-  let pillBg = '#f1f3f4';
-  let pillColor = '#3c4043';
-
-  if (day >= 1 && day <= 5) {
-    if (timeNum < 908) {
-      phaseText = 'Pre-Market (Opens 09:15 AM)';
-      pillBg = '#fef7e0'; pillColor = '#b06000'; dotColor = '#f2994a';
-    } else if (timeNum < 915) {
-      phaseText = 'Pre-Open Discovery (09:08–09:15)';
-      pillBg = '#fef7e0'; pillColor = '#b06000'; dotColor = '#f2994a';
-    } else if (timeNum < 930) {
-      phaseText = '⚠️ Volatile Open (Wide Spreads)';
-      pillBg = '#fce8e6'; pillColor = '#c5221f'; dotColor = '#ea4335';
-    } else if (timeNum < 1000) {
-      phaseText = '🟢 PRIME BUY WINDOW (09:30–10:00 AM)';
-      pillBg = '#e6f4ea'; pillColor = '#137333'; dotColor = '#34a853';
-    } else if (timeNum < 1030) {
-      phaseText = 'Core Stabilization (10:00–10:30 AM)';
-      pillBg = '#e8f0fe'; pillColor = '#1a73e8'; dotColor = '#4285f4';
-    } else if (timeNum < 1130) {
-      phaseText = '🔵 PRIME SELL / EXIT (10:30–11:30 AM)';
-      pillBg = '#e8f0fe'; pillColor = '#1a73e8'; dotColor = '#1a73e8';
-    } else if (timeNum < 1400) {
-      phaseText = 'Midday Lull (Negative Drift Bias)';
-      pillBg = '#f1f3f4'; pillColor = '#5f6368'; dotColor = '#9aa0a6';
-    } else if (timeNum < 1515) {
-      phaseText = 'Afternoon Momentum (14:00–15:15)';
-      pillBg = '#e6f4f7'; pillColor = '#005b6e'; dotColor = '#005b6e';
-    } else if (timeNum <= 1530) {
-      phaseText = '⏰ Fallback Closeout (15:15–15:30)';
-      pillBg = '#fef7e0'; pillColor = '#b06000'; dotColor = '#f2994a';
-    } else {
-      phaseText = 'Market Closed (Session Ended 15:30)';
-      pillBg = '#f1f3f4'; pillColor = '#5f6368'; dotColor = '#5f6368';
-    }
+  // Auto-sampling timer: polling every 60s when viewing MAFANG tab
+  if (!window.mafangIntradayInterval) {
+    window.mafangIntradayInterval = setInterval(() => {
+      const activeTab = document.querySelector('.tab.active');
+      if (activeTab && activeTab.dataset.tab === 'mafang') {
+        updateMafangLivePortal();
+      }
+    }, 60000);
   }
 
-  const phaseDot = document.getElementById('portalPhaseDot');
-  const phaseTxt = document.getElementById('portalPhaseText');
-  const phasePill = document.getElementById('portalMarketPhasePill');
-
-  if (phaseDot) phaseDot.style.background = dotColor;
-  if (phaseTxt) phaseTxt.textContent = phaseText;
-  if (phasePill) {
-    phasePill.style.background = pillBg;
-    phasePill.style.color = pillColor;
-  }
-
-  // Fetch live quote via google.script.run if available
+  // Fetch live 30-min candle stream & real-time adaptive model via google.script.run
   if (typeof google !== 'undefined' && google.script && google.script.run) {
     google.script.run.withSuccessHandler(function(q) {
       if (!q) return;
@@ -1936,31 +1895,58 @@ function updateMafangLivePortal() {
       const highEl = document.getElementById('portalMafangHigh');
       const ddEl = document.getElementById('portalMafangDrawdown');
       const dipPill = document.getElementById('portalDipPill');
+      const ruleEl = document.getElementById('mafangTodayRule');
+      const phaseTxt = document.getElementById('portalPhaseText');
+      const phaseDot = document.getElementById('portalPhaseDot');
+      const phasePill = document.getElementById('portalMarketPhasePill');
 
+      // Update Action Directive dynamically with real intraday price training
+      if (ruleEl && q.actionHeadline) {
+        ruleEl.innerHTML = '<b>' + q.actionHeadline + '</b> <span style="font-weight:400;color:#004351;font-size:11px">(' + q.actionDetail + ')</span>';
+      }
+
+      // Update Live Prices
       if (cmpEl && q.cmp) cmpEl.textContent = '₹' + Number(q.cmp).toFixed(2);
-      if (chgEl && q.chgPct != null) {
-        const sign = q.chgPct >= 0 ? '+' : '';
-        const chgSign = q.chg >= 0 ? '+₹' : '-₹';
-        chgEl.textContent = `${sign}${Number(q.chgPct).toFixed(2)}% (${chgSign}${Math.abs(Number(q.chg)).toFixed(2)})`;
-        chgEl.style.background = q.chgPct >= 0 ? '#e6f4ea' : '#fce8e6';
-        chgEl.style.color = q.chgPct >= 0 ? '#137333' : '#c5221f';
-        chgEl.style.borderColor = q.chgPct >= 0 ? '#ceead6' : '#fad2cf';
+      if (chgEl && q.dayChgPct != null) {
+        const sign = q.dayChgPct >= 0 ? '+' : '';
+        const chgSign = q.dayChg >= 0 ? '+₹' : '-₹';
+        chgEl.textContent = sign + Number(q.dayChgPct).toFixed(2) + '% (' + chgSign + Math.abs(Number(q.dayChg)).toFixed(2) + ')';
+        chgEl.style.background = q.dayChgPct >= 0 ? '#e6f4ea' : '#fce8e6';
+        chgEl.style.color = q.dayChgPct >= 0 ? '#137333' : '#c5221f';
+        chgEl.style.borderColor = q.dayChgPct >= 0 ? '#ceead6' : '#fad2cf';
       }
       if (lowEl && q.dayLow) lowEl.textContent = '₹' + Number(q.dayLow).toFixed(2);
       if (highEl && q.dayHigh) highEl.textContent = '₹' + Number(q.dayHigh).toFixed(2);
-      if (ddEl && q.drawdown != null) {
-        ddEl.textContent = Number(q.drawdown).toFixed(2) + '%';
+      if (ddEl && q.drawdownFromHigh != null) {
+        ddEl.textContent = Number(q.drawdownFromHigh).toFixed(2) + '%';
+        ddEl.style.color = q.drawdownFromHigh <= -3.0 ? '#d93025' : '#3c4043';
       }
-      if (dipPill && day === 4 && q.drawdown <= -3.0) {
-        dipPill.style.background = '#fce8e6';
-        dipPill.style.color = '#c5221f';
-        dipPill.style.border = '2px solid #d93025';
-        dipPill.innerHTML = '<strong style="color:#d93025">🚨 3% DIP SIGNAL ACTIVE!</strong> Buy Triggered!';
+
+      // Live Session Regime Badge
+      if (phaseTxt && q.regimeBadge) phaseTxt.textContent = q.regimeBadge.replace(/^●\s*/, '');
+      if (phasePill && q.isDipTriggered) {
+        phasePill.style.background = '#fce8e6';
+        phasePill.style.color = '#c5221f';
+        phasePill.style.border = '1px solid #fad2cf';
       }
-    }).getMafangLiveQuote();
+
+      // Tactical Dip Trigger Pill
+      if (dipPill) {
+        if (q.isDipTriggered) {
+          dipPill.style.background = '#fce8e6';
+          dipPill.style.color = '#c5221f';
+          dipPill.style.border = '2px solid #d93025';
+          dipPill.innerHTML = '<strong style="color:#d93025">🚨 3% DIP SIGNAL ACTIVE!</strong> Drop: ' + Number(q.drawdownFromHigh).toFixed(2) + '%';
+        } else {
+          dipPill.style.background = '#f8f9fa';
+          dipPill.style.color = '#3c4043';
+          dipPill.style.border = '1px solid #dadce0';
+          dipPill.innerHTML = 'From High: <b id="portalMafangDrawdown" style="color:' + (q.drawdownFromHigh <= -2.0 ? '#d93025' : '#3c4043') + '">' + Number(q.drawdownFromHigh).toFixed(2) + '%</b> (Thu Dip: -3.0%)';
+        }
+      }
+    }).getMafangIntradayAnalysis();
   }
 }
-
 
 function openStreamlitMafang() {
   window.open('http://localhost:8501', '_blank');
