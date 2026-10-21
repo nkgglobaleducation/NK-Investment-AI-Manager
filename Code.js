@@ -45,7 +45,9 @@ const INDEX_LIST = [
   // USD/INR: GOOGLEFINANCE's CURRENCY: tickers don't reliably resolve when written via the
   // Apps Script API (confirmed — always came back 0), so this one is fetched separately from
   // a free public forex API instead of a GOOGLEFINANCE formula. See fetchUsdInrRate_() below.
-  { key:'USDINR', label:'USD/INR', ticker:null }
+  { key:'USDINR', label:'USD/INR', ticker:null },
+  // MAFANG ETF — auto-tracked for the MAFANG Timing tab with zero manual uploads needed
+  { key:'MAFANG', label:'MAFANG.NS', ticker:'NSE:MAFANG' }
   // GIFT NIFTY intentionally NOT included: NSE IX isn't a supported GOOGLEFINANCE exchange
   // prefix, and no free public API exists for it either — it would just show "—" forever if added.
   // GOLD (CURRENCY:XAUUSD) has the same GOOGLEFINANCE-from-Apps-Script issue as USD/INR did and
@@ -2605,7 +2607,10 @@ function toggleStar(sym) {
 /* ==================== MAFANG REAL-TIME QUOTE ==================== */
 function getMafangLiveQuote() {
   try {
-    const res = UrlFetchApp.fetch('https://query1.finance.yahoo.com/v8/finance/chart/MAFANG.NS?interval=1d', { muteHttpExceptions: true });
+    const res = UrlFetchApp.fetch('https://query1.finance.yahoo.com/v8/finance/chart/MAFANG.NS?interval=1d', {
+      muteHttpExceptions: true,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }
+    });
     const json = JSON.parse(res.getContentText());
     const meta = json.chart.result[0].meta;
     const cmp = meta.regularMarketPrice || 0;
@@ -2617,6 +2622,13 @@ function getMafangLiveQuote() {
     const dd = high > 0 ? ((cmp - high) / high) * 100 : 0;
     return { success: true, cmp: cmp, prevClose: prev, chg: chg, chgPct: chgPct, dayHigh: high, dayLow: low, drawdown: dd };
   } catch (e) {
+    try {
+      const idx = readIndices_();
+      if (idx && idx.MAFANG && idx.MAFANG.value > 0) {
+        const m = idx.MAFANG;
+        return { success: true, cmp: m.value, prevClose: m.value - m.change, chg: m.change, chgPct: m.changePct * 100, dayHigh: m.value, dayLow: m.value, drawdown: 0 };
+      }
+    } catch (err) {}
     return { success: false, cmp: 287.07, prevClose: 280.37, chg: 6.70, chgPct: 2.39, dayHigh: 292.37, dayLow: 269.0, drawdown: -1.81 };
   }
 }
